@@ -1,0 +1,79 @@
+Solutions to bomb lab
+------
+
+## phase 1
+check string in memory 0x40264d
+ans: Wow! Brazil is big.
+
+## phase 2
+fibonacci number.
+ans: 0 1 1 2 3 5
+
+## phase 3
+1. string at 0x40272d: %d %d
+
+2. x/20xw 0x402670
+    0x402670 <__dso_handle+424>:	0x004011a2	0x00000000	0x004011a9	0x00000000
+    0x402680 <__dso_handle+440>:	0x00401199	0x00000000	0x00401192	0x00000000
+    0x402690 <__dso_handle+456>:	0x00401189	0x00000000	0x00401182	0x00000000
+    0x4026a0 <__dso_handle+472>:	0x0040117a	0x00000000	0x00401173	0x00000000
+
+the quickest way is to run stepwise to the end and see the two values.
+ans: 2 -102
+
+## phase 4
+ans: 10 5
+I use brute force. since there are only 15 possibilities. 
+
+## phase 5
+1. string at 0x4026b0: maduiersnfotvbylInvalid phase%s\n
+
+2. string at 0x402646: oilers
+
+we enter a string sized 6, and the program use the 6 char as index to generate
+new string, which is "oilers".
+
+ans: jdoefg
+
+## phase 6
+1. ($rsp + 0x30) store the six number.
+
+2. x/28xw 0x6037a0
+    0x6037a0 <node6>:	0x00000352	0x00000006	0x00000000	0x00000000
+    0x6037b0 <node5>:	0x00000397	0x00000005	0x006037a0	0x00000000
+    0x6037c0 <node4>:	0x000003be	0x00000004	0x006037b0	0x00000000
+    0x6037d0 <node3>:	0x00000385	0x00000003	0x006037c0	0x00000000
+    0x6037e0 <node2>:	0x0000005f	0x00000002	0x006037d0	0x00000000
+    0x6037f0 <node1>:	0x0000024c	0x00000001	0x006037e0	0x00000000
+    0x603800 <n48>:	    0x000003e9	0x00000000	0x00000000	0x00000000
+
+This problem is enter a permutation of 1,2,3,4,5,6, and use this to sort six predifined
+numbers. The logic is a mess. 1 and 2 should give some important hint. Following
+is my note of coming out my own solution.
+
+3be > 397 > 385 > 352 > 24c > 5f
+c > b > d > a > f > e
+
+3, 4, 2, 5, 0, 1
+
+4, 5, 3, 6, 1, 2
+
+ans: 3, 2, 4, 1, 6, 5
+
+## secrete phase
+1. input a number, less than or equal to 0x3e8
+
+2. we want func to return 1.
+func (n, ptr) :+= 
+if (ptr == null) return -1
+if (*ptr <= n) {
+    if (*ptr == n) {
+        return 0;
+    } else {
+        ptr = *(ptr + 0x10)
+        return 2 * (fun7 (n, ptr)) + 1
+    }
+}
+
+0x6039c0: 0x24
+0x603980: 0x32

@@ -1,0 +1,9 @@
+Notes of Buffer lab
+---
+
+We mainly study a simple case of Buffer Overflow, that we can inject code into stack, then execute them. 
+
+While the real systems(Linux, OpenBSD, etc.) disallow execute code in stack. So modern exploits often use techniques called "return to libc" and "format string Vulnerability". You can refer to the following docs for further details:
+* http://crypto.stanford.edu/cs155/papers/formatstring-1.2.pdf
+* http://static.usenix.org/events/sec02/full_papers/staniford/staniford.pdf
+* http://www.cs.columbia.edu/~locasto/projects/candidacy/papers/shacham2004ccs.pdf
