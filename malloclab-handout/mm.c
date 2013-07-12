@@ -153,7 +153,7 @@ void *malloc (size_t size) {
 void free (void *bp) {
 /* $end mmfree */
     if(bp == 0) 
-    return;
+        return;
 
     size_t size = GET_SIZE(HDRP(bp));
     if (heap_listp == 0){
@@ -174,16 +174,16 @@ void *realloc(void *ptr, size_t size) {
 
     /* If size == 0 then this is just free, and we return NULL. */
     if(size == 0) {
-        mm_free(ptr);
+        free(ptr);
         return 0;
     }
 
     /* If oldptr is NULL, then this is just malloc. */
     if(ptr == NULL) {
-        return mm_malloc(size);
+        return malloc(size);
     }
 
-    newptr = mm_malloc(size);
+    newptr = malloc(size);
 
     /* If realloc() fails the original block is left untouched  */
     if(!newptr) {
@@ -192,11 +192,12 @@ void *realloc(void *ptr, size_t size) {
 
     /* Copy the old data. */
     oldsize = GET_SIZE(HDRP(ptr));
-    if(size < oldsize) oldsize = size;
+    if(size < oldsize) 
+        oldsize = size;
     memcpy(newptr, ptr, oldsize);
 
     /* Free the old block. */
-    mm_free(ptr);
+    free(ptr);
 
     return newptr;
 }
