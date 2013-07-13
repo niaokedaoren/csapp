@@ -5,6 +5,7 @@
  * lists, first fit placement, and boundary tag coalescing, as described
  * in the CS:APP2e text. Blocks must be aligned to doubleword (8 byte) 
  * boundaries. Minimum block size is 16 bytes. 
+ * 
  */
 #include <assert.h>
 #include <stdio.h>
@@ -56,8 +57,8 @@
 #define PACK(size, alloc)  ((size) | (alloc))
 
 /* Read and write a word at address p */
-#define GET(p)       (*(unsigned long *)(p))            
-#define PUT(p, val)  (*(unsigned long *)(p) = (val))    
+#define GET(p)       (*(unsigned long long *)(p))            
+#define PUT(p, val)  (*(unsigned long long *)(p) = (val))    
 
 /* Read the size and allocated fields from address p */
 #define GET_SIZE(p)  (GET(p) & ~0x7)                   
@@ -126,10 +127,7 @@ void *malloc (size_t size) {
         return NULL;
 
     /* Adjust block size to include overhead and alignment reqs. */
-    if (size <= DSIZE)                                          
-        asize = 2*DSIZE;                                        
-    else
-        asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE); 
+    asize = ALIGN(size + DSIZE);
 
     /* Search the free list for a fit */
     if ((bp = find_fit(asize)) != NULL) {  
@@ -219,7 +217,7 @@ void *calloc (size_t nmemb, size_t size) {
 /*
  * Return whether the pointer is in the heap.
  * May be useful for debugging.
- */
+ */  
 // static int in_heap(const void *p) {
 //     return p <= mem_heap_hi() && p >= mem_heap_lo();
 // }
@@ -239,7 +237,7 @@ void mm_checkheap(int verbose) {
     char *bp = heap_listp;
 
     if (verbose)
-    printf("Heap (%p):\n", heap_listp);
+        printf("Heap (%p):\n", heap_listp);
 
     if ((GET_SIZE(HDRP(heap_listp)) != DSIZE) || !GET_ALLOC(HDRP(heap_listp)))
         printf("Bad prologue header\n");
@@ -264,7 +262,6 @@ void mm_checkheap(int verbose) {
 /*
  * coalesce - Boundary tag coalescing. Return ptr to coalesced block
  */
-/* $begin mmfree */
 static void *coalesce(void *bp) 
 {
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
@@ -308,8 +305,8 @@ static void *extend_heap(size_t words)
     char *bp;
     size_t size;
 
-    /* Allocate an even number of words to maintain alignment */
-    size = (words % 2) ? (words+1) * WSIZE : words * WSIZE; 
+    /* single-word alignment */
+    size = (words + 1) * WSIZE; 
     if ((long)(bp = mem_sbrk(size)) == -1)  
         return NULL;                                        
 
@@ -351,13 +348,13 @@ static void *find_fit(size_t asize){
 
     /* Search from the rover to the end of list */
     for ( ; GET_SIZE(HDRP(rover)) > 0; rover = NEXT_BLKP(rover))
-    if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
-        return rover;
+        if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
+            return rover;
 
     /* search from start of list to old rover */
     for (rover = heap_listp; rover < oldrover; rover = NEXT_BLKP(rover))
-    if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
-        return rover;
+        if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
+            return rover;
 
     return NULL;  /* no fit found */
 #else 
