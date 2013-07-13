@@ -44,12 +44,12 @@
 /*
  * If NEXT_FIT defined use next fit search, else use first fit search 
  */
-#define NEXT_FITx
+//#define NEXT_FITx
 
 /* Basic constants and macros */
 #define WSIZE       8       /* Word and header/footer size (bytes) */ //line:vm:mm:beginconst
 #define DSIZE       16      /* Doubleword size (bytes) */
-#define CHUNKSIZE  (1<<12)  /* Extend heap by this amount (bytes) */  //line:vm:mm:endconst 
+#define CHUNKSIZE  (1<<8)  /* Extend heap by this amount (bytes) */  //line:vm:mm:endconst 
 
 #define MAX(x, y) ((x) > (y)? (x) : (y))  
 
