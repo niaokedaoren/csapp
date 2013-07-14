@@ -139,6 +139,8 @@ static void init_free_list();
 static int get_level(size_t s);
 static int is_valid_block(size_t s);
 
+void mm_checkfreetbl();
+
 /*************************************
  * Main routines
  ************************************/
@@ -195,6 +197,7 @@ void *malloc (size_t size) {
     if ((bp = find_fit(asize)) != NULL) {  
 #ifdef DEBUG    
         mm_checkheap(1);
+        mm_checkfreetbl();
 #endif            
         place(bp, asize);                  
         return bp;
@@ -208,6 +211,7 @@ void *malloc (size_t size) {
     place(bp, asize);                                 
 #ifdef DEBUG    
     mm_checkheap(1);
+    mm_checkfreetbl();    
 #endif    
     return bp;
 }
@@ -232,6 +236,7 @@ void free (void *bp) {
     coalesce(bp);
 #ifdef DEBUG    
     mm_checkheap(1);
+    mm_checkfreetbl();
 #endif    
 }
 
