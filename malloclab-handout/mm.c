@@ -135,7 +135,7 @@ static int checkblock(void *bp);
 
 static void insert_entry(void * bp);
 static void delete_entry(void * bp);
-static int is_minimum_free(size_t s);
+static int is_valid_block(size_t s);
 
 /*************************************
  * Main routines
@@ -179,11 +179,10 @@ void *malloc (size_t size) {
     if (size == 0)
         return NULL;
 
-    /* require minimum size */
-    asize = MAX(size, MINSIZE * WSIZE);
-
     /* Adjust block size to include overhead and alignment reqs. */
-    asize = ALIGN(asize + DSIZE);
+    asize = ALIGN(size + DSIZE);
+    /* require minimum size */
+    asize = MAX(asize, MINSIZE * WSIZE);
 #ifdef DEBUG
     printf("malloc: %d bytes.\n", (unsigned)asize);    
     assert(asize >= MINSIZE * WSIZE);
@@ -407,7 +406,7 @@ static void *extend_heap(size_t words)
 static void place(void *bp, size_t asize){
     size_t csize = GET_SIZE(HDRP(bp));   
 
-    if (is_minimum_free(csize - asize)) {  
+    if (is_valid_block(csize - asize)) {  
         /* we want to make sure the new free block satisfy the minimum requirement */            
         delete_entry(bp); /* remove the record in the free block list */
         PUT(HDRP(bp), PACK(asize, 1));
@@ -529,6 +528,6 @@ void delete_entry(void * bp) {
 }
 
 static
-int is_minimum_free(size_t s){
+int is_valid_block(size_t s){
     return s >= (MINSIZE * WSIZE);
 }
