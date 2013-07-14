@@ -152,14 +152,14 @@ int mm_init(void) {
     /* Create the initial empty heap */
     if ((heap_listp = mem_sbrk(4*WSIZE + SEG_LEVLL * DSIZE)) == (void *)-1) 
         return -1;
+    flist_tbl = heap_listp + WSIZE;
+    init_free_list();
     PUT(heap_listp, 0);                          /* Alignment padding, actually not necessasry */
     PUT(heap_listp + ((2 * SEG_LEVLL + 1)*WSIZE), PACK(DSIZE, 1)); /* Prologue header */ 
     PUT(heap_listp + ((2 * SEG_LEVLL + 2)*WSIZE), PACK(DSIZE, 1)); /* Prologue footer */ 
     PUT(heap_listp + ((2 * SEG_LEVLL + 3)*WSIZE), PACK(0, 1));     /* Epilogue header */
     heap_listp += ((2 * SEG_LEVLL + 2)*WSIZE);
 
-    flist_tbl = heap_listp + WSIZE;
-    init_free_list();
 
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     char *freeb = extend_heap(CHUNKSIZE/WSIZE);
