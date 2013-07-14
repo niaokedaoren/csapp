@@ -1,10 +1,13 @@
 /*
  * mm.c
  *
- * Simple, 32-bit and 64-bit clean allocator based on implicit free
- * lists, first fit placement, and boundary tag coalescing, as described
- * in the CS:APP2e text. Blocks must be aligned to doubleword (8 byte) 
- * boundaries. Minimum block size is 16 bytes. 
+ * 64 bit memory allocator. 
+ *
+ * Explicit free list. 
+ * Boundary tag coalescing.
+ * First fit.
+ * minimum allocated block: 3 words
+ * minimum free block: 6 word
  * 
  */
 #include <assert.h>
@@ -16,6 +19,11 @@
 #include "mm.h"
 #include "memlib.h"
 
+
+/*************************************
+ * Constants and Helpers
+ ************************************/
+
 /* If you want debugging output, use the following macro.  When you hand
  * in, remove the #define DEBUG line. */
 #define DEBUG
@@ -24,7 +32,6 @@
 #else
 # define dbg_printf(...)
 #endif
-
 
 /* do not change the following! */
 #ifdef DRIVER
@@ -37,6 +44,9 @@
 
 /* single word (4) or double word (8) alignment */
 #define ALIGNMENT 8
+
+/* minimum allocated block is 4 words */
+#define MINSIZE 4 
 
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(p) (((size_t)(p) + (ALIGNMENT-1)) & ~0x7)
@@ -72,11 +82,49 @@
 #define NEXT_BLKP(bp)  ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE))) 
 #define PREV_BLKP(bp)  ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE))) 
 
+static char *flist_head = NULL;   /* Pointer to first free block */
+static char *flist_tail = NULL;   /* Pointer to last free block */
+
+// Macro is evil, inline function is more reliable.
+
+/* previous free block */
+static
+void* prev_free(void * bp) {
+    return *((void **)(bp));
+}
+
+/* next free block */
+static
+void* next_free(void * bp) {
+    return *((void **)(bp) + 1);
+}
+
+/* set previous free block pointer */
+static
+void set_prev_free(void * bp, char * p) {
+    *((char **)(bp)) = p; 
+}
+
+/* set next free block pointer */
+static
+void set_next_free(void * bp, char * p) {
+    *((char **)(bp) + 1) = p;
+}
+
+/* is the last free block */
+static
+int is_tail(void * bp) {
+    return next_free(bp) == NULL;
+}
+
+/* is the head of the free block list */
+static
+int is_head(void * bp) {
+    return prev_free(bp) == NULL;
+}
+
 /* Global variables */
 static char *heap_listp = 0;  /* Pointer to first block */  
-#ifdef NEXT_FIT
-static char *rover;           /* Next fit rover */
-#endif
 
 /* Function prototypes for internal helper routines */
 static void *extend_heap(size_t words);
@@ -84,30 +132,36 @@ static void place(void *bp, size_t asize);
 static void *find_fit(size_t asize);
 static void *coalesce(void *bp);
 static void printblock(void *bp); 
-static void checkblock(void *bp);
+static int checkblock(void *bp);
+
+static void insert_entry(void * bp);
+static void delete_entry(void * bp);
+static int is_minimum_free(size_t s);
+
+/*************************************
+ * Main routines
+ ************************************/
 
 /*
  * Initialize: return -1 on error, 0 on success.
  */
 int mm_init(void) {
     /* Create the initial empty heap */
-    if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1) //line:vm:mm:begininit
+    if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1) 
         return -1;
     PUT(heap_listp, 0);                          /* Alignment padding */
     PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1)); /* Prologue header */ 
     PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1)); /* Prologue footer */ 
     PUT(heap_listp + (3*WSIZE), PACK(0, 1));     /* Epilogue header */
-    heap_listp += (2*WSIZE);                     //line:vm:mm:endinit  
-/* $end mminit */
+    heap_listp += (2*WSIZE);
 
-#ifdef NEXT_FIT
-    rover = heap_listp;
-#endif
-/* $begin mminit */
+    flist_head = flist_tail = NULL;
 
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
-    if (extend_heap(CHUNKSIZE/WSIZE) == NULL) 
+    char *freeb = extend_heap(CHUNKSIZE/WSIZE);
+    if (freeb == NULL) {
         return -1;
+    }
     return 0;
 }
 
@@ -126,20 +180,34 @@ void *malloc (size_t size) {
     if (size == 0)
         return NULL;
 
+    /* require minimum size */
+    asize = MAX(size, MINSIZE * WSIZE);
+
     /* Adjust block size to include overhead and alignment reqs. */
-    asize = ALIGN(size + DSIZE);
+    asize = ALIGN(asize + DSIZE);
+#ifdef DEBUG
+    printf("malloc: %d bytes.\n", (unsigned)asize);    
+    assert(asize >= MINSIZE * WSIZE);
+#endif    
 
     /* Search the free list for a fit */
     if ((bp = find_fit(asize)) != NULL) {  
+#ifdef DEBUG    
+        mm_checkheap(1);
+#endif            
         place(bp, asize);                  
         return bp;
     }
 
     /* No fit found. Get more memory and place the block */
     extendsize = MAX(asize,CHUNKSIZE);                
-    if ((bp = extend_heap(extendsize/WSIZE)) == NULL) 
-        return NULL;                                  
+    bp = extend_heap(extendsize/WSIZE);
+    if (bp == NULL) 
+        return NULL;
     place(bp, asize);                                 
+#ifdef DEBUG    
+    mm_checkheap(1);
+#endif    
     return bp;
 }
 
@@ -147,7 +215,9 @@ void *malloc (size_t size) {
  * free
  */
 void free (void *bp) {
-/* $end mmfree */
+#ifdef DEBUG
+    printf("free[%p].\n", bp);    
+#endif        
     if(bp == 0) 
         return;
 
@@ -159,6 +229,9 @@ void free (void *bp) {
     PUT(HDRP(bp), PACK(size, 0));
     PUT(FTRP(bp), PACK(size, 0));
     coalesce(bp);
+#ifdef DEBUG    
+    mm_checkheap(1);
+#endif    
 }
 
 /*
@@ -260,7 +333,9 @@ void mm_checkheap(int verbose) {
  */
 
 /*
- * coalesce - Boundary tag coalescing. Return ptr to coalesced block
+ * coalesce
+ * Boundary tag coalescing. Return ptr to coalesced block
+ * delete or insert entry of free list.
  */
 static void *coalesce(void *bp) 
 {
@@ -268,37 +343,44 @@ static void *coalesce(void *bp)
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
 
+#ifdef DEBUG    
+    size_t sizef = GET_SIZE(FTRP(bp));    
+    assert(size == sizef);
+#endif    
+
     if (prev_alloc && next_alloc) {            /* Case 1 */
-        return bp;
+        /* nop */
     }
     else if (prev_alloc && !next_alloc) {      /* Case 2 */
+        delete_entry(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size,0));
     }
     else if (!prev_alloc && next_alloc) {      /* Case 3 */
+        delete_entry(PREV_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
         PUT(FTRP(bp), PACK(size, 0));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
     else {                                     /* Case 4 */
+        delete_entry(PREV_BLKP(bp));
+        delete_entry(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) +  GET_SIZE(FTRP(NEXT_BLKP(bp)));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
-#ifdef NEXT_FIT
-    /* Make sure the rover isn't pointing into the free block */
-    /* that we just coalesced */
-    if ((rover > (char *)bp) && (rover < NEXT_BLKP(bp))) 
-    rover = bp;
-#endif
+    insert_entry(bp);
     return bp;
 }
 
 /* 
  * extend_heap - Extend heap with free block and return its block pointer
+ * 
+ * Return:
+ *      the new free block pointer
  */
 static void *extend_heap(size_t words) 
 {
@@ -326,13 +408,17 @@ static void *extend_heap(size_t words)
 static void place(void *bp, size_t asize){
     size_t csize = GET_SIZE(HDRP(bp));   
 
-    if ((csize - asize) >= (2*DSIZE)) { 
+    if (is_minimum_free(csize - asize)) {  
+        /* we want to make sure the new free block satisfy the minimum requirement */            
+        delete_entry(bp); /* remove the record in the free block list */
         PUT(HDRP(bp), PACK(asize, 1));
         PUT(FTRP(bp), PACK(asize, 1));
         bp = NEXT_BLKP(bp);
         PUT(HDRP(bp), PACK(csize-asize, 0));
         PUT(FTRP(bp), PACK(csize-asize, 0));
+        insert_entry(bp);
     }else { 
+        delete_entry(bp);
         PUT(HDRP(bp), PACK(csize, 1));
         PUT(FTRP(bp), PACK(csize, 1));
     }
@@ -342,39 +428,22 @@ static void place(void *bp, size_t asize){
  * find_fit - Find a fit for a block with asize bytes 
  */
 static void *find_fit(size_t asize){
-#ifdef NEXT_FIT 
-    /* Next fit search */
-    char *oldrover = rover;
-
-    /* Search from the rover to the end of list */
-    for ( ; GET_SIZE(HDRP(rover)) > 0; rover = NEXT_BLKP(rover))
-        if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
-            return rover;
-
-    /* search from start of list to old rover */
-    for (rover = heap_listp; rover < oldrover; rover = NEXT_BLKP(rover))
-        if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
-            return rover;
-
-    return NULL;  /* no fit found */
-#else 
     /* First fit search */
     void *bp;
 
-    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
-        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+    // iterate free list
+    for (bp = flist_head; bp && GET_SIZE(HDRP(bp)) > 0; bp = next_free(bp)) {
+        if (asize <= GET_SIZE(HDRP(bp))) {
             return bp;
         }
     }
     return NULL; /* No fit */
-#endif
 }
 
 static void printblock(void *bp) 
 {
     size_t hsize, halloc, fsize, falloc;
 
-    mm_checkheap(0);
     hsize = GET_SIZE(HDRP(bp));
     halloc = GET_ALLOC(HDRP(bp));  
     fsize = GET_SIZE(FTRP(bp));
@@ -390,10 +459,77 @@ static void printblock(void *bp)
     (unsigned)fsize, (falloc ? 'a' : 'f'));
 }
 
-static void checkblock(void *bp) 
+static int checkblock(void *bp) 
 {
-    if ((size_t)bp % 8)
+    if ((size_t)bp % 8) {
         printf("Error: %p is not doubleword aligned\n", bp);
-    if (GET(HDRP(bp)) != GET(FTRP(bp)))
-        printf("Error: header does not match footer\n");
+        return -1;
+    }
+    if (GET(HDRP(bp)) != GET(FTRP(bp))) {
+        printf("Error[%p]: header does not match footer\n", bp);
+        return -1;
+    }
+    return 0;
+}
+
+static
+void insert_entry(void * bp) {
+    if (!flist_head) {
+        // empty list
+        flist_head = bp;
+        flist_tail = bp;
+        set_prev_free(bp, NULL);
+        set_next_free(bp, NULL);
+    } else {
+        if ((char *)bp < flist_head) {
+            // insert at head
+            set_prev_free(flist_head, bp);
+            set_next_free(bp, flist_head);
+            set_prev_free(bp, NULL);
+            flist_head = bp;
+        } else if (flist_tail < (char *)bp) {
+            // insert to tail
+            set_next_free(flist_tail, bp);
+            set_prev_free(bp, flist_tail);
+            set_next_free(bp, NULL);
+            flist_tail = bp;
+        } else {
+            // find some place in the list
+            char * c = flist_head;
+            while (c < (char *)bp) {
+                c = next_free(c);
+            }
+            set_next_free(prev_free(c), bp);
+            set_prev_free(bp, prev_free(c));
+            set_prev_free(c, bp);
+            set_next_free(bp, c);
+        }
+    }
+}
+
+static
+void delete_entry(void * bp) {
+    if (is_head(bp)) {
+        flist_head = next_free(bp);
+        if (flist_head) {
+            set_prev_free(flist_head, NULL);
+        } else {
+            flist_tail = NULL;
+        }
+    } else if (is_tail(bp)) {
+        flist_tail = prev_free(bp);
+        if (flist_tail) {
+            set_next_free(flist_tail, NULL);
+        } else {
+            flist_head = NULL;
+        }
+    } else {
+        set_next_free(prev_free(bp), next_free(bp));
+        set_prev_free(next_free(bp), prev_free(bp));
+    }
+}
+
+static
+int is_minimum_free(size_t s){
+    return s >= (MINSIZE * WSIZE);
 }
