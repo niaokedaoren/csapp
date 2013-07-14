@@ -312,6 +312,15 @@ void mm_checkheap(int verbose) {
         printf("Bad epilogue header\n");    
 }
 
+
+void mm_checkfreetbl() {
+    printf("Show free table\n");
+    for (int i = 0; i < SEG_LEVLL; ++i) {
+        char * bp = flist_tbl + (i * DSIZE);
+        printf("Level %d: head[%p], tail[%p]\n", i, *(char **)bp, *(char **)(bp + WSIZE));
+    }
+}
+
 /* 
  * The remaining routines are internal helper routines 
  */
