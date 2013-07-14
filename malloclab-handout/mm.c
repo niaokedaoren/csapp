@@ -130,14 +130,14 @@ static void *coalesce(void *bp);
 static void printblock(void *bp); 
 static int checkblock(void *bp);
 
-static char **get_head(int level);
-static char **get_tail(int level);
-static void insert_entry(int level, void * bp);
-static void delete_entry(int level, void * bp);
+static inline char **get_head(int level);
+static inline char **get_tail(int level);
+static inline void insert_entry(int level, void * bp);
+static inline void delete_entry(int level, void * bp);
 
-static void init_free_list();
-static int get_level(size_t s);
-static int is_valid_block(size_t s);
+static inline void init_free_list();
+static inline int get_level(size_t s);
+static inline int is_valid_block(size_t s);
 
 void mm_checkfreetbl();
 
@@ -476,7 +476,7 @@ static int checkblock(void *bp)
     return 0;
 }
 
-static
+static inline
 void insert_entry(int level, void * bp) {
     char **flist_head = get_head(level);
     char **flist_tail = get_tail(level);
@@ -513,7 +513,7 @@ void insert_entry(int level, void * bp) {
     }
 }
 
-static
+static inline
 void delete_entry(int level, void * bp) {
     char **flist_head = get_head(level);
     char **flist_tail = get_tail(level);    
@@ -537,12 +537,13 @@ void delete_entry(int level, void * bp) {
     }
 }
 
-static
+static inline
 int is_valid_block(size_t s){
     return s >= (MINSIZE * WSIZE);
 }
 
-static void init_free_list() {
+static inline 
+void init_free_list() {
     for (int i = 0; i < SEG_LEVLL; ++i) {
         char * bp = flist_tbl + (i * DSIZE);
         set_prev_free(bp, NULL);
@@ -550,13 +551,13 @@ static void init_free_list() {
     }
 }
 
-static
+static inline
 char **get_head(int level) {
     char * bp = flist_tbl + (level * DSIZE);
     return (char **)(bp);
 }
 
-static
+static inline
 char **get_tail(int level) {
     char * bp = flist_tbl + (level * DSIZE) + WSIZE;
     return (char **)(bp);    
@@ -565,7 +566,7 @@ char **get_tail(int level) {
 /*
  * This works for all positive number. 
  */
-static
+static inline
 int get_level(size_t size) {
     int r = 0, s = 1;
     while ((int)size > s - 1 && r < SEG_LEVLL) {
