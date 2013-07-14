@@ -3,11 +3,11 @@
  *
  * 64 bit memory allocator. 
  *
- * Explicit free list. 
+ * Segregated free list. 
  * Boundary tag coalescing.
  * First fit.
- * minimum allocated block: 3 words
- * minimum free block: 6 word
+ * minimum allocated block: 4 words
+ * minimum free block: 4 word
  * 
  */
 #include <assert.h>
@@ -47,18 +47,16 @@
 /* minimum allocated block is 4 words */
 #define MINSIZE 4 
 
-/* rounds up to the nearest multiple of ALIGNMENT */
-#define ALIGN(p) (((size_t)(p) + (ALIGNMENT-1)) & ~0x7)
-
-/*
- * If NEXT_FIT defined use next fit search, else use first fit search 
- */
-//#define NEXT_FITx
+/* number of levels of segregated list */ 
+#define SEG_LEVLL 16
 
 /* Basic constants and macros */
 #define WSIZE       8       /* Word and header/footer size (bytes) */ //line:vm:mm:beginconst
 #define DSIZE       16      /* Doubleword size (bytes) */
 #define CHUNKSIZE  (1<<8)  /* Extend heap by this amount (bytes) */  //line:vm:mm:endconst 
+
+/* rounds up to the nearest multiple of ALIGNMENT */
+#define ALIGN(p) (((size_t)(p) + (ALIGNMENT-1)) & ~0x7)
 
 #define MAX(x, y) ((x) > (y)? (x) : (y))  
 
@@ -81,8 +79,7 @@
 #define NEXT_BLKP(bp)  ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE))) 
 #define PREV_BLKP(bp)  ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE))) 
 
-static char *flist_head = NULL;   /* Pointer to first free block */
-static char *flist_tail = NULL;   /* Pointer to last free block */
+static char *flist_tbl = NULL;    /* Pointer to free list table */
 
 // Macro is evil, inline function is more reliable.
 
@@ -133,8 +130,13 @@ static void *coalesce(void *bp);
 static void printblock(void *bp); 
 static int checkblock(void *bp);
 
-static void insert_entry(void * bp);
-static void delete_entry(void * bp);
+static char **get_head(int level);
+static char **get_tail(int level);
+static void insert_entry(int level, void * bp);
+static void delete_entry(int level, void * bp);
+
+static void init_free_list();
+static int get_level(size_t s);
 static int is_valid_block(size_t s);
 
 /*************************************
@@ -146,15 +148,16 @@ static int is_valid_block(size_t s);
  */
 int mm_init(void) {
     /* Create the initial empty heap */
-    if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1) 
+    if ((heap_listp = mem_sbrk(4*WSIZE + SEG_LEVLL * DSIZE)) == (void *)-1) 
         return -1;
-    PUT(heap_listp, 0);                          /* Alignment padding */
-    PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1)); /* Prologue header */ 
-    PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1)); /* Prologue footer */ 
-    PUT(heap_listp + (3*WSIZE), PACK(0, 1));     /* Epilogue header */
-    heap_listp += (2*WSIZE);
+    PUT(heap_listp, 0);                          /* Alignment padding, actually not necessasry */
+    PUT(heap_listp + ((2 * SEG_LEVLL + 1)*WSIZE), PACK(DSIZE, 1)); /* Prologue header */ 
+    PUT(heap_listp + ((2 * SEG_LEVLL + 2)*WSIZE), PACK(DSIZE, 1)); /* Prologue footer */ 
+    PUT(heap_listp + ((2 * SEG_LEVLL + 3)*WSIZE), PACK(0, 1));     /* Epilogue header */
+    heap_listp += ((2 * SEG_LEVLL + 2)*WSIZE);
 
-    flist_head = flist_tail = NULL;
+    flist_tbl = heap_listp + WSIZE;
+    init_free_list();
 
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     char *freeb = extend_heap(CHUNKSIZE/WSIZE);
@@ -284,23 +287,6 @@ void *calloc (size_t nmemb, size_t size) {
   return newptr;
 }
 
-
-/*
- * Return whether the pointer is in the heap.
- * May be useful for debugging.
- */  
-// static int in_heap(const void *p) {
-//     return p <= mem_heap_hi() && p >= mem_heap_lo();
-// }
-
-/*
- * Return whether the pointer is aligned.
- * May be useful for debugging.
- */
-// static int aligned(const void *p) {
-//     return (size_t)ALIGN(p) == (size_t)p;
-// }
-
 /*
  * mm_checkheap
  */
@@ -350,27 +336,27 @@ static void *coalesce(void *bp)
         /* nop */
     }
     else if (prev_alloc && !next_alloc) {      /* Case 2 */
-        delete_entry(NEXT_BLKP(bp));
+        delete_entry(get_level(GET_SIZE(HDRP(NEXT_BLKP(bp)))), NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size,0));
     }
     else if (!prev_alloc && next_alloc) {      /* Case 3 */
-        delete_entry(PREV_BLKP(bp));
+        delete_entry(get_level(GET_SIZE(HDRP(PREV_BLKP(bp)))), PREV_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
         PUT(FTRP(bp), PACK(size, 0));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
     else {                                     /* Case 4 */
-        delete_entry(PREV_BLKP(bp));
-        delete_entry(NEXT_BLKP(bp));
+        delete_entry(get_level(GET_SIZE(HDRP(PREV_BLKP(bp)))), PREV_BLKP(bp));
+        delete_entry(get_level(GET_SIZE(HDRP(NEXT_BLKP(bp)))), NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) +  GET_SIZE(FTRP(NEXT_BLKP(bp)));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
-    insert_entry(bp);
+    insert_entry(get_level(GET_SIZE(HDRP(bp))), bp);
     return bp;
 }
 
@@ -408,15 +394,15 @@ static void place(void *bp, size_t asize){
 
     if (is_valid_block(csize - asize)) {  
         /* we want to make sure the new free block satisfy the minimum requirement */            
-        delete_entry(bp); /* remove the record in the free block list */
+        delete_entry(get_level(GET_SIZE(HDRP(bp))), bp); /* remove the record in the free block list */
         PUT(HDRP(bp), PACK(asize, 1));
         PUT(FTRP(bp), PACK(asize, 1));
         bp = NEXT_BLKP(bp);
         PUT(HDRP(bp), PACK(csize-asize, 0));
         PUT(FTRP(bp), PACK(csize-asize, 0));
-        insert_entry(bp);
+        insert_entry(get_level(GET_SIZE(HDRP(bp))), bp);
     }else { 
-        delete_entry(bp);
+        delete_entry(get_level(GET_SIZE(HDRP(bp))), bp);
         PUT(HDRP(bp), PACK(csize, 1));
         PUT(FTRP(bp), PACK(csize, 1));
     }
@@ -428,12 +414,18 @@ static void place(void *bp, size_t asize){
 static void *find_fit(size_t asize){
     /* First fit search */
     void *bp;
+    char *flist_head;
 
-    // iterate free list
-    for (bp = flist_head; bp && GET_SIZE(HDRP(bp)) > 0; bp = next_free(bp)) {
-        if (asize <= GET_SIZE(HDRP(bp))) {
-            return bp;
+    int level = get_level(asize);
+
+    while (level < SEG_LEVLL) { // serach in the size-class from small to large
+        flist_head = *(get_head(level));
+        for (bp = flist_head; bp && GET_SIZE(HDRP(bp)) > 0; bp = next_free(bp)) {
+            if (asize <= GET_SIZE(HDRP(bp))) {
+                return bp;
+            }
         }
+        level++;
     }
     return NULL; /* No fit */
 }
@@ -471,29 +463,31 @@ static int checkblock(void *bp)
 }
 
 static
-void insert_entry(void * bp) {
-    if (!flist_head) {
+void insert_entry(int level, void * bp) {
+    char **flist_head = get_head(level);
+    char **flist_tail = get_tail(level);
+    if (!(*flist_head)) {
         // empty list
-        flist_head = bp;
-        flist_tail = bp;
+        *flist_head = bp;
+        *flist_tail = bp;
         set_prev_free(bp, NULL);
         set_next_free(bp, NULL);
     } else {
-        if ((char *)bp < flist_head) {
+        if ((char *)bp < (*flist_head)) {
             // insert at head
-            set_prev_free(flist_head, bp);
-            set_next_free(bp, flist_head);
+            set_prev_free(*flist_head, bp);
+            set_next_free(bp, *flist_head);
             set_prev_free(bp, NULL);
-            flist_head = bp;
-        } else if (flist_tail < (char *)bp) {
+            *flist_head = bp;
+        } else if ((*flist_tail) < (char *)bp) {
             // insert to tail
-            set_next_free(flist_tail, bp);
-            set_prev_free(bp, flist_tail);
+            set_next_free(*flist_tail, bp);
+            set_prev_free(bp, *flist_tail);
             set_next_free(bp, NULL);
-            flist_tail = bp;
+            *flist_tail = bp;
         } else {
             // find some place in the list
-            char * c = flist_head;
+            char * c = *flist_head;
             while (c < (char *)bp) {
                 c = next_free(c);
             }
@@ -506,20 +500,22 @@ void insert_entry(void * bp) {
 }
 
 static
-void delete_entry(void * bp) {
+void delete_entry(int level, void * bp) {
+    char **flist_head = get_head(level);
+    char **flist_tail = get_tail(level);    
     if (is_head(bp)) {
-        flist_head = next_free(bp);
-        if (flist_head) {
-            set_prev_free(flist_head, NULL);
+        *flist_head = next_free(bp);
+        if (*flist_head) {
+            set_prev_free(*flist_head, NULL);
         } else {
-            flist_tail = NULL;
+            *flist_tail = NULL;
         }
     } else if (is_tail(bp)) {
-        flist_tail = prev_free(bp);
-        if (flist_tail) {
-            set_next_free(flist_tail, NULL);
+        *flist_tail = prev_free(bp);
+        if (*flist_tail) {
+            set_next_free(*flist_tail, NULL);
         } else {
-            flist_head = NULL;
+            *flist_head = NULL;
         }
     } else {
         set_next_free(prev_free(bp), next_free(bp));
@@ -530,4 +526,37 @@ void delete_entry(void * bp) {
 static
 int is_valid_block(size_t s){
     return s >= (MINSIZE * WSIZE);
+}
+
+static void init_free_list() {
+    for (int i = 0; i < SEG_LEVLL; ++i) {
+        char * bp = flist_tbl + (i * DSIZE);
+        set_prev_free(bp, NULL);
+        set_next_free(bp, NULL);
+    }
+}
+
+static
+char **get_head(int level) {
+    char * bp = flist_tbl + (level * DSIZE);
+    return (char **)(bp);
+}
+
+static
+char **get_tail(int level) {
+    char * bp = flist_tbl + (level * DSIZE) + WSIZE;
+    return (char **)(bp);    
+}
+
+/*
+ * This works for all positive number. 
+ */
+static
+int get_level(size_t size) {
+    int r = 0, s = 1;
+    while ((int)size > s - 1 && r < SEG_LEVLL) {
+        s <<= 1;
+        r += 1;
+    }
+    return r - 1;
 }
