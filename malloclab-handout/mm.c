@@ -53,7 +53,7 @@
 /* Basic constants and macros */
 #define WSIZE       8       /* Word and header/footer size (bytes) */ //line:vm:mm:beginconst
 #define DSIZE       16      /* Doubleword size (bytes) */
-#define CHUNKSIZE  (1<<8)  /* Extend heap by this amount (bytes) */  //line:vm:mm:endconst 
+#define CHUNKSIZE  (1<<10)  /* Extend heap by this amount (bytes) */  //line:vm:mm:endconst 
 
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(p) (((size_t)(p) + (ALIGNMENT-1)) & ~0x7)
@@ -84,37 +84,37 @@ static char *flist_tbl = NULL;    /* Pointer to free list table */
 // Macro is evil, inline function is more reliable.
 
 /* previous free block */
-static
+static inline
 void* prev_free(void * bp) {
     return *((void **)(bp));
 }
 
 /* next free block */
-static
+static inline
 void* next_free(void * bp) {
     return *((void **)(bp) + 1);
 }
 
 /* set previous free block pointer */
-static
+static inline
 void set_prev_free(void * bp, char * p) {
     *((char **)(bp)) = p; 
 }
 
 /* set next free block pointer */
-static
+static inline
 void set_next_free(void * bp, char * p) {
     *((char **)(bp) + 1) = p;
 }
 
 /* is the last free block */
-static
+static inline
 int is_tail(void * bp) {
     return next_free(bp) == NULL;
 }
 
 /* is the head of the free block list */
-static
+static inline
 int is_head(void * bp) {
     return prev_free(bp) == NULL;
 }
