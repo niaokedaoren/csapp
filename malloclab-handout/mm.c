@@ -6,8 +6,8 @@
  * Segregated free list. 
  * Boundary tag coalescing.
  * First fit.
- * minimum allocated block: 4 words
- * minimum free block: 4 word
+ * minimum allocated block: 3 words
+ * minimum free block: 3 word
  * 
  */
 #include <assert.h>
@@ -45,7 +45,7 @@
 #define ALIGNMENT 8
 
 /* minimum allocated block is 4 words */
-#define MINSIZE 4 
+#define MINSIZE 3
 
 /* number of levels of segregated list */ 
 #define SEG_LEVLL 16
@@ -79,48 +79,61 @@
 #define NEXT_BLKP(bp)  ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE))) 
 #define PREV_BLKP(bp)  ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE))) 
 
+/* Global variables */
+static char *heap_listp = 0;  /* Pointer to first block */  
 static char *flist_tbl = NULL;    /* Pointer to free list table */
 
 // Macro is evil, inline function is more reliable.
 
 /* previous free block */
-static inline
-void* prev_free(void * bp) {
-    return *((void **)(bp));
+static 
+void* get_prev_free(void * bp) {
+    int off = *((int*)bp);
+    if (off < 0) return NULL;    
+    return heap_listp + off;
 }
 
 /* next free block */
-static inline
-void* next_free(void * bp) {
-    return *((void **)(bp) + 1);
+static 
+void* get_next_free(void * bp) {
+    int off = *((int*)bp + 1);
+    if (off < 0) return NULL;
+    return heap_listp + off;
 }
 
 /* set previous free block pointer */
-static inline
+static 
 void set_prev_free(void * bp, char * p) {
-    *((char **)(bp)) = p; 
+    int * tp = (int *)bp;
+    if (p) {
+        *tp = p - heap_listp;
+    } else {
+        *tp = -1;
+    }
 }
 
 /* set next free block pointer */
-static inline
+static 
 void set_next_free(void * bp, char * p) {
-    *((char **)(bp) + 1) = p;
+    int * tp = (int *)bp + 1;
+    if (p) {
+        *tp = p - heap_listp;
+    } else {
+        *tp = -1;
+    }
 }
 
 /* is the last free block */
-static inline
+static 
 int is_tail(void * bp) {
-    return next_free(bp) == NULL;
+    return get_next_free(bp) == NULL;
 }
 
 /* is the head of the free block list */
-static inline
+static 
 int is_head(void * bp) {
-    return prev_free(bp) == NULL;
+    return get_prev_free(bp) == NULL;
 }
-
-/* Global variables */
-static char *heap_listp = 0;  /* Pointer to first block */  
 
 /* Function prototypes for internal helper routines */
 static void *extend_heap(size_t words);
@@ -434,7 +447,7 @@ static void *find_fit(size_t asize){
 
     while (level < SEG_LEVLL) { // serach in the size-class from small to large
         flist_head = *(get_head(level));
-        for (bp = flist_head; bp && GET_SIZE(HDRP(bp)) > 0; bp = next_free(bp)) {
+        for (bp = flist_head; bp && GET_SIZE(HDRP(bp)) > 0; bp = get_next_free(bp)) {
             if (asize <= GET_SIZE(HDRP(bp))) {
                 return bp;
             }
@@ -503,10 +516,10 @@ void insert_entry(int level, void * bp) {
             // find some place in the list
             char * c = *flist_head;
             while (c < (char *)bp) {
-                c = next_free(c);
+                c = get_next_free(c);
             }
-            set_next_free(prev_free(c), bp);
-            set_prev_free(bp, prev_free(c));
+            set_next_free(get_prev_free(c), bp);
+            set_prev_free(bp, get_prev_free(c));
             set_prev_free(c, bp);
             set_next_free(bp, c);
         }
@@ -518,22 +531,22 @@ void delete_entry(int level, void * bp) {
     char **flist_head = get_head(level);
     char **flist_tail = get_tail(level);    
     if (is_head(bp)) {
-        *flist_head = next_free(bp);
+        *flist_head = get_next_free(bp);
         if (*flist_head) {
             set_prev_free(*flist_head, NULL);
         } else {
             *flist_tail = NULL;
         }
     } else if (is_tail(bp)) {
-        *flist_tail = prev_free(bp);
+        *flist_tail = get_prev_free(bp);
         if (*flist_tail) {
             set_next_free(*flist_tail, NULL);
         } else {
             *flist_head = NULL;
         }
     } else {
-        set_next_free(prev_free(bp), next_free(bp));
-        set_prev_free(next_free(bp), prev_free(bp));
+        set_next_free(get_prev_free(bp), get_next_free(bp));
+        set_prev_free(get_next_free(bp), get_prev_free(bp));
     }
 }
 
@@ -544,11 +557,7 @@ int is_valid_block(size_t s){
 
 static inline 
 void init_free_list() {
-    for (int i = 0; i < SEG_LEVLL; ++i) {
-        char * bp = flist_tbl + (i * DSIZE);
-        set_prev_free(bp, NULL);
-        set_next_free(bp, NULL);
-    }
+    memset(flist_tbl, 0, SEG_LEVLL * DSIZE);
 }
 
 static inline
