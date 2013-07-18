@@ -83,12 +83,18 @@
 static char *heap_listp = 0;  /* Pointer to first block */  
 static char *flist_tbl = NULL;    /* Pointer to free list table */
 
+/* free list item type */
+typedef struct {
+    int off1; /* the offset of prev pointer */
+    int off2; /* the offset of next pointer */
+} free_block_t;
+
 // Macro is evil, inline function is more reliable.
 
 /* previous free block */
 static 
 void* get_prev_free(void * bp) {
-    int off = *((int*)bp);
+    int off = ((free_block_t*)bp)->off1;
     if (off < 0) return NULL;    
     return heap_listp + off;
 }
@@ -96,7 +102,7 @@ void* get_prev_free(void * bp) {
 /* next free block */
 static 
 void* get_next_free(void * bp) {
-    int off = *((int*)bp + 1);
+    int off = ((free_block_t*)bp)->off2;
     if (off < 0) return NULL;
     return heap_listp + off;
 }
@@ -104,23 +110,13 @@ void* get_next_free(void * bp) {
 /* set previous free block pointer */
 static 
 void set_prev_free(void * bp, char * p) {
-    int * tp = (int *)bp;
-    if (p) {
-        *tp = p - heap_listp;
-    } else {
-        *tp = -1;
-    }
+    ((free_block_t*)bp)->off1 = p ? p - heap_listp : -1;
 }
 
 /* set next free block pointer */
 static 
 void set_next_free(void * bp, char * p) {
-    int * tp = (int *)bp + 1;
-    if (p) {
-        *tp = p - heap_listp;
-    } else {
-        *tp = -1;
-    }
+    ((free_block_t*)bp)->off2 = p ? p - heap_listp : -1;
 }
 
 /* is the last free block */
