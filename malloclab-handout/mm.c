@@ -89,47 +89,6 @@ typedef struct {
     int off2; /* the offset of next pointer */
 } free_block_t;
 
-// Macro is evil, inline function is more reliable.
-
-/* previous free block */
-static 
-void* get_prev_free(void * bp) {
-    int off = ((free_block_t*)bp)->off1;
-    if (off < 0) return NULL;    
-    return heap_listp + off;
-}
-
-/* next free block */
-static 
-void* get_next_free(void * bp) {
-    int off = ((free_block_t*)bp)->off2;
-    if (off < 0) return NULL;
-    return heap_listp + off;
-}
-
-/* set previous free block pointer */
-static 
-void set_prev_free(void * bp, char * p) {
-    ((free_block_t*)bp)->off1 = p ? p - heap_listp : -1;
-}
-
-/* set next free block pointer */
-static 
-void set_next_free(void * bp, char * p) {
-    ((free_block_t*)bp)->off2 = p ? p - heap_listp : -1;
-}
-
-/* is the last free block */
-static 
-int is_tail(void * bp) {
-    return get_next_free(bp) == NULL;
-}
-
-/* is the head of the free block list */
-static 
-int is_head(void * bp) {
-    return get_prev_free(bp) == NULL;
-}
 
 /* Function prototypes for internal helper routines */
 static void *extend_heap(size_t words);
@@ -139,6 +98,12 @@ static void *coalesce(void *bp);
 static void printblock(void *bp); 
 static int checkblock(void *bp);
 
+static void* get_prev_free(void * bp); /* previous free block */
+static void* get_next_free(void * bp); /* next free block */
+static void set_prev_free(void * bp, char * p); /* set previous free block pointer */
+static void set_next_free(void * bp, char * p); /* set next free block pointer */
+static int is_tail(void * bp); /* is the last free block */
+static int is_head(void * bp); /* is the head of the free block list */
 static inline char **get_head(int level);
 static inline char **get_tail(int level);
 static inline void insert_entry(int level, void * bp);
@@ -147,8 +112,7 @@ static inline void delete_entry(int level, void * bp);
 static inline void init_free_list();
 static inline int get_level(size_t s);
 static inline int is_valid_block(size_t s);
-
-void mm_checkfreetbl();
+static void mm_checkfreetbl();
 
 /*************************************
  * Main routines
@@ -206,7 +170,6 @@ void *malloc (size_t size) {
     if ((bp = find_fit(asize)) != NULL) {  
 #ifdef DEBUG    
         mm_checkheap(1);
-        mm_checkfreetbl();
 #endif            
         place(bp, asize);                  
         return bp;
@@ -220,7 +183,6 @@ void *malloc (size_t size) {
     place(bp, asize);                                 
 #ifdef DEBUG    
     mm_checkheap(1);
-    mm_checkfreetbl();    
 #endif    
     return bp;
 }
@@ -245,7 +207,6 @@ void free (void *bp) {
     coalesce(bp);
 #ifdef DEBUG    
     mm_checkheap(1);
-    mm_checkfreetbl();
 #endif    
 }
 
@@ -305,6 +266,7 @@ void *calloc (size_t nmemb, size_t size) {
  * mm_checkheap
  */
 void mm_checkheap(int verbose) {
+    mm_checkfreetbl();
     char *bp = heap_listp;
 
     if (verbose)
@@ -326,14 +288,6 @@ void mm_checkheap(int verbose) {
         printf("Bad epilogue header\n");    
 }
 
-
-void mm_checkfreetbl() {
-    printf("Show free table\n");
-    for (int i = 0; i < SEG_LEVLL; ++i) {
-        char * bp = flist_tbl + (i * DSIZE);
-        printf("Level %d: head[%p], tail[%p]\n", i, *(char **)bp, *(char **)(bp + WSIZE));
-    }
-}
 
 /* 
  * The remaining routines are internal helper routines 
@@ -485,8 +439,16 @@ static int checkblock(void *bp)
     return 0;
 }
 
-static inline
-void insert_entry(int level, void * bp) {
+static void mm_checkfreetbl() {
+    printf("Show free table\n");
+    for (int i = 0; i < SEG_LEVLL; ++i) {
+        char * bp = flist_tbl + (i * DSIZE);
+        printf("Level %d: head[%p], tail[%p]\n", i, *(char **)bp, *(char **)(bp + WSIZE));
+    }
+}
+
+// Macro is evil, inline function is more reliable.
+static inline void insert_entry(int level, void * bp) {
     char **flist_head = get_head(level);
     char **flist_tail = get_tail(level);
     if (!(*flist_head)) {
@@ -522,8 +484,7 @@ void insert_entry(int level, void * bp) {
     }
 }
 
-static inline
-void delete_entry(int level, void * bp) {
+static inline void delete_entry(int level, void * bp) {
     char **flist_head = get_head(level);
     char **flist_tail = get_tail(level);    
     if (is_head(bp)) {
@@ -546,24 +507,20 @@ void delete_entry(int level, void * bp) {
     }
 }
 
-static inline
-int is_valid_block(size_t s){
+static inline int is_valid_block(size_t s){
     return s >= (MINSIZE * WSIZE);
 }
 
-static inline 
-void init_free_list() {
+static inline void init_free_list() {
     memset(flist_tbl, 0, SEG_LEVLL * DSIZE);
 }
 
-static inline
-char **get_head(int level) {
+static inline char **get_head(int level) {
     char * bp = flist_tbl + (level * DSIZE);
     return (char **)(bp);
 }
 
-static inline
-char **get_tail(int level) {
+static inline char **get_tail(int level) {
     char * bp = flist_tbl + (level * DSIZE) + WSIZE;
     return (char **)(bp);    
 }
@@ -571,12 +528,46 @@ char **get_tail(int level) {
 /*
  * This works for all positive number. 
  */
-static inline
-int get_level(size_t size) {
+static inline int get_level(size_t size) {
     int r = 0, s = 1;
     while ((int)size > s - 1 && r < SEG_LEVLL) {
         s <<= 1;
         r += 1;
     }
     return r - 1;
+}
+
+
+/* previous free block */
+static void* get_prev_free(void * bp) {
+    int off = ((free_block_t*)bp)->off1;
+    if (off < 0) return NULL;    
+    return heap_listp + off;
+}
+
+/* next free block */
+static void* get_next_free(void * bp) {
+    int off = ((free_block_t*)bp)->off2;
+    if (off < 0) return NULL;
+    return heap_listp + off;
+}
+
+/* set previous free block pointer */
+static void set_prev_free(void * bp, char * p) {
+    ((free_block_t*)bp)->off1 = p ? p - heap_listp : -1;
+}
+
+/* set next free block pointer */
+static void set_next_free(void * bp, char * p) {
+    ((free_block_t*)bp)->off2 = p ? p - heap_listp : -1;
+}
+
+/* is the last free block */
+static int is_tail(void * bp) {
+    return get_next_free(bp) == NULL;
+}
+
+/* is the head of the free block list */
+static int is_head(void * bp) {
+    return get_prev_free(bp) == NULL;
 }
