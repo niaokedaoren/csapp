@@ -53,7 +53,7 @@
 /* Basic constants and macros */
 #define WSIZE       8       /* Word and header/footer size (bytes) */ //line:vm:mm:beginconst
 #define DSIZE       16      /* Doubleword size (bytes) */
-#define CHUNKSIZE  (1<<10)  /* Extend heap by this amount (bytes) */  //line:vm:mm:endconst 
+#define CHUNKSIZE  (1<<8)  /* Extend heap by this amount (bytes) */  //line:vm:mm:endconst 
 
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(p) (((size_t)(p) + (ALIGNMENT-1)) & ~0x7)
@@ -544,7 +544,7 @@ static inline char **get_tail(int level) {
  * This works for all positive number. 
  */
 static inline int get_level(size_t size) {
-    int r = 0, s = 1;
+    int r = 0, s = 16;
     while ((int)size > s - 1 && r < SEG_LEVLL) {
         s <<= 1;
         r += 1;
