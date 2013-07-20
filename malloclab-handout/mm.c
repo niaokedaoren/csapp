@@ -128,17 +128,17 @@ static inline int is_prev_alloc(void * hp);
  */
 int mm_init(void) {
     /* Create the initial empty heap */
-    if ((heap_listp = mem_sbrk(3*WSIZE + SEG_LEVLL * DSIZE)) == (void *)-1) 
+    if ((heap_listp = mem_sbrk(WSIZE + SEG_LEVLL * DSIZE)) == (void *)-1) 
         return -1;
-    flist_tbl = heap_listp + WSIZE;
+    flist_tbl = heap_listp;
     init_free_list();
-    PUT(heap_listp, 0);                          /* Alignment padding, actually not necessasry */
-    PUT(heap_listp + ((2 * SEG_LEVLL + 1)*WSIZE), PACK(WSIZE, 1)); /* Prologue header */ 
-    PUT(heap_listp + ((2 * SEG_LEVLL + 2)*WSIZE), PACK(0, 1));     /* Epilogue header */
+    int table_off = 2 * SEG_LEVLL * WSIZE;
+    PUT(heap_listp + table_off, PACK(4, 1));     /* Prologue header */ 
+    PUT(heap_listp + table_off + 4, PACK(0, 1));     /* Epilogue header */
 
-    flag(heap_listp + ((2 * SEG_LEVLL + 1)*WSIZE));
-    flag(heap_listp + ((2 * SEG_LEVLL + 2)*WSIZE)); // set the alloc flag in next block
-    heap_listp += ((2 * SEG_LEVLL + 2)*WSIZE);
+    flag(heap_listp + table_off);
+    flag(heap_listp + table_off + 4);                /* set the alloc flag in next block */
+    heap_listp += table_off + 4;
 
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     char *freeb = extend_heap(CHUNKSIZE/WSIZE);
@@ -163,10 +163,8 @@ void *malloc (size_t size) {
     if (size == 0)
         return NULL;
 
-    /* Adjust block size to include overhead and alignment reqs. */
-    asize = ALIGN(size + WSIZE);
-    /* require minimum size */
-    asize = MAX(asize, MINSIZE * WSIZE);
+    asize = ALIGN(size + 4); /* the overhead is payload + header(4 byte) + padding(optional) */
+    asize = MAX(asize, MINSIZE * WSIZE); /* require minimum size */
 #ifdef DEBUG
     printf("malloc: %d bytes.\n", (unsigned)asize);    
     assert(asize >= MINSIZE * WSIZE);
@@ -231,7 +229,7 @@ void free (void *bp) {
     mm_checkheap(1);
 #endif
     mark_free(HDRP(bp));
-    PUT((char*)FTRP(bp)+4, GET(HDRP(bp)));
+    PUT(FTRP(bp), GET(HDRP(bp)));
     coalesce(bp);
 #ifdef DEBUG    
     printf("free: after.\n");        
@@ -305,9 +303,12 @@ static void printblock(void *bp)
     }
 
     if (halloc){
-        printf("%p: header: [%u:%c], prev_alloc: [%d]\n", bp, (unsigned)hsize, (halloc ? 'a' : 'f'), is_prev_alloc(HDRP(bp)));
+        printf("%p: header: [%u:%c], prev_alloc: [%d]\n", 
+            bp, (unsigned)hsize, (halloc ? 'a' : 'f'), is_prev_alloc(HDRP(bp)));
     } else {
-        printf("%p: header: [%u:%c], prev[%p], next[%p], prev_alloc: [%d]\n", bp, (unsigned)hsize, (halloc ? 'a' : 'f'), get_prev_free(bp), get_next_free(bp), is_prev_alloc(HDRP(bp)));
+        printf("%p: header: [%u:%c], footer: [%u, %c], prev[%p], next[%p], prev_alloc: [%d]\n", 
+            bp, (unsigned)hsize, (halloc ? 'a' : 'f'), GET_SIZE(FTRP(bp)), (GET_ALLOC(FTRP(bp)) ? 'a' : 'f'), 
+            get_prev_free(bp), get_next_free(bp), is_prev_alloc(HDRP(bp)));
     }
 
 }
@@ -317,6 +318,12 @@ static int checkblock(void *bp)
     if ((size_t)bp % 8) {
         printf("Error: %p is not doubleword aligned\n", bp);
         return -1;
+    }
+    if (!GET_ALLOC(HDRP(bp))) { // free block
+        if (GET_SIZE(HDRP(bp)) != GET_SIZE(FTRP(bp))) {
+            printf("Error: header does match footer.\n");
+            return -1;
+        }
     }
     return 0;
 }
@@ -339,14 +346,14 @@ void mm_checkheap(int verbose) {
     if (verbose)
         printf("Heap (%p):\n", heap_listp);
 
-    if ((GET_SIZE(HDRP(heap_listp)) != WSIZE) || !GET_ALLOC(HDRP(heap_listp)))
+    if ((GET_SIZE(HDRP(heap_listp)) != 4) || !GET_ALLOC(HDRP(heap_listp)))
         printf("Bad prologue header\n");
-    checkblock(heap_listp);
+
     if (verbose) {
         printblock(heap_listp);
     }
 
-    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+    for (bp = NEXT_BLKP(heap_listp); GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
         if (verbose) 
             printblock(bp);
         checkblock(bp);
@@ -381,21 +388,21 @@ static void *coalesce(void *bp)
         delete_entry(get_level(GET_SIZE(HDRP(NEXT_BLKP(bp)))), NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK3(size, 2, 0));
-        PUT((char*)FTRP(bp)+4, PACK3(size, 2, 0));
+        PUT(FTRP(bp), PACK3(size, 2, 0));
     }
     else if (!prev_alloc && next_alloc) {      /* Case 3 */
         delete_entry(get_level(GET_SIZE(HDRP(PREV_BLKP(bp)))), PREV_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
-        set_size((char*)FTRP(bp)+4, size);
+        set_size(FTRP(bp), size);
         set_size(HDRP(PREV_BLKP(bp)), size);
         bp = PREV_BLKP(bp);
     }
     else {                                     /* Case 4 */
         delete_entry(get_level(GET_SIZE(HDRP(PREV_BLKP(bp)))), PREV_BLKP(bp));
         delete_entry(get_level(GET_SIZE(HDRP(NEXT_BLKP(bp)))), NEXT_BLKP(bp));
-        size += GET_SIZE(HDRP(PREV_BLKP(bp))) +  GET_SIZE((char*)FTRP(NEXT_BLKP(bp)) + 4);
+        size += GET_SIZE(HDRP(PREV_BLKP(bp))) +  GET_SIZE(FTRP(NEXT_BLKP(bp)));
         set_size(HDRP(PREV_BLKP(bp)), size);
-        set_size((char*)FTRP(NEXT_BLKP(bp)) + 4, size);
+        set_size(FTRP(NEXT_BLKP(bp)), size);
         bp = PREV_BLKP(bp);
     }
     unflag(HDRP(NEXT_BLKP(bp)));    
@@ -423,7 +430,7 @@ static void *extend_heap(size_t words)
 
     /* Initialize free block header/footer and the epilogue header */
     PUT(HDRP(bp), PACK3(size, prev_alloc << 1, 0));         /* Free block header */   
-    PUT((char*)FTRP(bp) + 4, PACK3(size, prev_alloc << 1, 0));         /* Free block footer */   
+    PUT(FTRP(bp), PACK3(size, prev_alloc << 1, 0));         /* Free block footer */   
     set_prev_free(bp, NULL);
     set_next_free(bp, NULL);
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); /* New epilogue header */ 
@@ -446,7 +453,7 @@ static void place(void *bp, size_t asize){
         mark_alloc(HDRP(bp));
         bp = NEXT_BLKP(bp);
         PUT(HDRP(bp), PACK3(csize-asize, 2, 0));
-        PUT((char*)FTRP(bp)+4, PACK3(csize-asize, 2, 0));  
+        PUT(FTRP(bp), PACK3(csize-asize, 2, 0));  
         insert_entry(get_level(GET_SIZE(HDRP(bp))), bp);
     }else { 
         delete_entry(get_level(GET_SIZE(HDRP(bp))), bp);
@@ -573,34 +580,32 @@ static inline int in_heap(const void *p) {
 
 /* previous free block */
 static inline void* get_prev_free(void * bp) {
-    free_head_t *fp = (free_head_t*)HDRP(bp);
-    int off = fp->off1;
+    int off = GET(bp);
     if (off < 0) return NULL;
     return heap_listp + off;
 }
 
 /* next free block */
 static inline void* get_next_free(void * bp) {
-    free_foot_t *fp = (free_foot_t*)FTRP(bp);
-    int off = fp->off2;
+    int off = GET((char*)FTRP(bp) - 4);
     if (off < 0) return NULL;
     return heap_listp + off;
 }
 
 /* set previous free block pointer */
 static inline void set_prev_free(void * bp, char * p) {
-    free_head_t *hp = (free_head_t*)HDRP(bp);
-    hp->off1 = p ? p - heap_listp : -1;
+    int off = p ? p - heap_listp : -1;
+    PUT(bp, off);
 }
 
 /* set next free block pointer */
 static inline void set_next_free(void * bp, char * p) {
-    free_foot_t *fp = (free_foot_t*)FTRP(bp);
-    fp->off2 = p ? p - heap_listp : -1;
+    int off = p ? p - heap_listp : -1;
+    PUT((char*)FTRP(bp) - 4, off);
 }
 
 static inline void set_size(void * hp, size_t s) {
-    unsigned flags = GET(hp) & 0x7;
+    unsigned flags = GET(hp) & 0x3;
     PUT(hp, s | flags);
 }
 
@@ -623,7 +628,7 @@ static inline void PUT(void * hp, unsigned val) {
 
 /* Read the size and allocated fields from address p */
 static inline unsigned GET_SIZE(void * hp) {
-    return (GET(hp) & ~0x7);
+    return (GET(hp) & ~0x3);
 }               
 static inline int GET_ALLOC(void * hp) {
     return (GET(hp) & 0x1);
@@ -631,21 +636,21 @@ static inline int GET_ALLOC(void * hp) {
 
 /* Given block ptr bp, compute address of its header and footer */
 static inline char* HDRP(void * bp) {
-    return ((char *)(bp) - WSIZE);
+    return ((char *)(bp) - 4);
 } 
 
 // ALARM: this only works for free block
 static inline char* FTRP(void * bp) {
-    return ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE);
+    return ((char *)(bp) + GET_SIZE(HDRP(bp)) - WSIZE);
 }
 
 static inline char* NEXT_BLKP(void * bp) {
-    return ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)));
+    return ((char *)(bp) + GET_SIZE(HDRP(bp)));
 }
 
 // ALARM: this only works for free block
 static inline char* PREV_BLKP(void * bp) {
-    return ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE + 4)));
+    return ((char *)(bp) - GET_SIZE(((char *)(bp) - WSIZE)));
 }
 
 static inline void flag(void * hp) {
