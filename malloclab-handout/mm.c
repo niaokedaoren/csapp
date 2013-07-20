@@ -6,8 +6,8 @@
  * Segregated free list. 
  * Boundary tag coalescing.
  * First fit.
- * minimum allocated block: 3 words
- * minimum free block: 3 word
+ * minimum allocated block: 2 words
+ * minimum free block: 2 word
  * 
  */
 #include <assert.h>
@@ -18,8 +18,6 @@
 
 #include "mm.h"
 #include "memlib.h"
-
-
 /*************************************
  * Constants and Helpers
  ************************************/
@@ -45,7 +43,7 @@
 #define ALIGNMENT 8
 
 /* minimum allocated block is 4 words */
-#define MINSIZE 3
+#define MINSIZE 2
 
 /* number of levels of segregated list */ 
 #define SEG_LEVLL 16
@@ -72,8 +70,17 @@ static char *flist_tbl = NULL;    /* Pointer to free list table */
 typedef struct {
     int off1; /* the offset of prev pointer */
     int off2; /* the offset of next pointer */
-} free_block_t;
+} flist_item_t;
 
+typedef struct{
+    unsigned head;
+    int off1;
+} free_head_t;
+
+typedef struct {
+    int off2;
+    unsigned foot;
+} free_foot_t;
 
 /* Function prototypes for internal helper routines */
 static void *extend_heap(size_t words);
@@ -98,12 +105,12 @@ static inline int get_level(size_t s);
 static inline int is_valid_block(size_t s);
 static inline void mm_checkfreetbl();
 
+static inline unsigned GET(void * p); /* Read and write a word at address p */
+static inline void PUT(void * p, unsigned val);
+static inline unsigned GET_SIZE(void * p); /* Read the size and allocated fields from address p */
 static inline void set_size(void * hp, size_t s);
 static inline void mark_free(void * hp);
 static inline void mark_alloc(void * hp);
-static inline unsigned long long GET(void * p); /* Read and write a word at address p */
-static inline void PUT(void * p, unsigned long long val);
-static inline unsigned long long GET_SIZE(void * p); /* Read the size and allocated fields from address p */
 static inline int GET_ALLOC(void * p);
 static inline char* HDRP(void * bp); /* Given block ptr bp, compute address of its header and footer */
 static inline char* FTRP(void * bp);
@@ -116,7 +123,6 @@ static inline int is_prev_alloc(void * hp);
 /*************************************
  * Main routines
  ************************************/
-
 /*
  * Initialize: return -1 on error, 0 on success.
  */
@@ -136,7 +142,7 @@ int mm_init(void) {
 
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     char *freeb = extend_heap(CHUNKSIZE/WSIZE);
-    if (freeb == NULL) {
+    if (freeb == NULL) {    
         return -1;
     }
     return 0;
@@ -182,18 +188,25 @@ void *malloc (size_t size) {
     }
 
     /* No fit found. Get more memory and place the block */
+#ifdef DEBUG
+    printf("malloc: before extend_heap.[[\n");
+    mm_checkheap(1);
+    printf("malloc: before extend_heap.]]\n");    
+#endif        
     extendsize = MAX(asize,CHUNKSIZE);                
     bp = extend_heap(extendsize/WSIZE);
     if (bp == NULL) 
         return NULL;
 #ifdef DEBUG
-    printf("malloc: before alloc.\n");
+    printf("malloc: after extend_heap; before alloc.[[\n");
     mm_checkheap(1);
+    printf("malloc: after extend_heap; before alloc.]]\n");    
 #endif    
     place(bp, asize);                                 
 #ifdef DEBUG    
-    printf("malloc: after alloc.\n");        
+    printf("malloc: after alloc.[[\n");        
     mm_checkheap(1);
+    printf("malloc: after alloc.]]\n");            
     printf("\n\n");
 #endif    
     return bp;
@@ -218,7 +231,7 @@ void free (void *bp) {
     mm_checkheap(1);
 #endif
     mark_free(HDRP(bp));
-    PUT(FTRP(bp), GET(HDRP(bp)));
+    PUT((char*)FTRP(bp)+4, GET(HDRP(bp)));
     coalesce(bp);
 #ifdef DEBUG    
     printf("free: after.\n");        
@@ -368,21 +381,21 @@ static void *coalesce(void *bp)
         delete_entry(get_level(GET_SIZE(HDRP(NEXT_BLKP(bp)))), NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK3(size, 2, 0));
-        PUT(FTRP(bp), PACK3(size, 2, 0));
+        PUT((char*)FTRP(bp)+4, PACK3(size, 2, 0));
     }
     else if (!prev_alloc && next_alloc) {      /* Case 3 */
         delete_entry(get_level(GET_SIZE(HDRP(PREV_BLKP(bp)))), PREV_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
-        set_size(FTRP(bp), size);
+        set_size((char*)FTRP(bp)+4, size);
         set_size(HDRP(PREV_BLKP(bp)), size);
         bp = PREV_BLKP(bp);
     }
     else {                                     /* Case 4 */
         delete_entry(get_level(GET_SIZE(HDRP(PREV_BLKP(bp)))), PREV_BLKP(bp));
         delete_entry(get_level(GET_SIZE(HDRP(NEXT_BLKP(bp)))), NEXT_BLKP(bp));
-        size += GET_SIZE(HDRP(PREV_BLKP(bp))) +  GET_SIZE(FTRP(NEXT_BLKP(bp)));
+        size += GET_SIZE(HDRP(PREV_BLKP(bp))) +  GET_SIZE((char*)FTRP(NEXT_BLKP(bp)) + 4);
         set_size(HDRP(PREV_BLKP(bp)), size);
-        set_size(FTRP(NEXT_BLKP(bp)), size);
+        set_size((char*)FTRP(NEXT_BLKP(bp)) + 4, size);
         bp = PREV_BLKP(bp);
     }
     unflag(HDRP(NEXT_BLKP(bp)));    
@@ -410,7 +423,9 @@ static void *extend_heap(size_t words)
 
     /* Initialize free block header/footer and the epilogue header */
     PUT(HDRP(bp), PACK3(size, prev_alloc << 1, 0));         /* Free block header */   
-    PUT(FTRP(bp), PACK3(size, prev_alloc << 1, 0));         /* Free block footer */   
+    PUT((char*)FTRP(bp) + 4, PACK3(size, prev_alloc << 1, 0));         /* Free block footer */   
+    set_prev_free(bp, NULL);
+    set_next_free(bp, NULL);
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); /* New epilogue header */ 
 
     /* Coalesce if the previous block was free */
@@ -431,7 +446,7 @@ static void place(void *bp, size_t asize){
         mark_alloc(HDRP(bp));
         bp = NEXT_BLKP(bp);
         PUT(HDRP(bp), PACK3(csize-asize, 2, 0));
-        PUT(FTRP(bp), PACK3(csize-asize, 2, 0));  
+        PUT((char*)FTRP(bp)+4, PACK3(csize-asize, 2, 0));  
         insert_entry(get_level(GET_SIZE(HDRP(bp))), bp);
     }else { 
         delete_entry(get_level(GET_SIZE(HDRP(bp))), bp);
@@ -558,35 +573,39 @@ static inline int in_heap(const void *p) {
 
 /* previous free block */
 static inline void* get_prev_free(void * bp) {
-    int off = ((free_block_t*)bp)->off1;
-    if (off < 0) return NULL;    
+    free_head_t *fp = (free_head_t*)HDRP(bp);
+    int off = fp->off1;
+    if (off < 0) return NULL;
     return heap_listp + off;
 }
 
 /* next free block */
 static inline void* get_next_free(void * bp) {
-    int off = ((free_block_t*)bp)->off2;
+    free_foot_t *fp = (free_foot_t*)FTRP(bp);
+    int off = fp->off2;
     if (off < 0) return NULL;
     return heap_listp + off;
 }
 
 /* set previous free block pointer */
 static inline void set_prev_free(void * bp, char * p) {
-    ((free_block_t*)bp)->off1 = p ? p - heap_listp : -1;
+    free_head_t *hp = (free_head_t*)HDRP(bp);
+    hp->off1 = p ? p - heap_listp : -1;
 }
 
 /* set next free block pointer */
 static inline void set_next_free(void * bp, char * p) {
-    ((free_block_t*)bp)->off2 = p ? p - heap_listp : -1;
+    free_foot_t *fp = (free_foot_t*)FTRP(bp);
+    fp->off2 = p ? p - heap_listp : -1;
 }
 
 static inline void set_size(void * hp, size_t s) {
-    unsigned int flags = GET(hp) & 0x7;
+    unsigned flags = GET(hp) & 0x7;
     PUT(hp, s | flags);
 }
 
 static inline void mark_free(void * hp) {
-    PUT(hp, GET(hp) & 0xfffffffe);
+    PUT(hp, GET(hp) & ~1);
 }
 
 static inline void mark_alloc(void * hp) {
@@ -594,20 +613,20 @@ static inline void mark_alloc(void * hp) {
 }
 
 /* Read and write a word at address p */
-static inline unsigned long long GET(void * p) {
-    return (*(unsigned long long *)(p));
+static inline unsigned GET(void * hp) {
+    return (*(unsigned *)(hp));
 }
 
-static inline void PUT(void * p, unsigned long long val) {
-    (*(unsigned long long *)(p) = (val));
+static inline void PUT(void * hp, unsigned val) {
+    (*(unsigned *)(hp) = (val));
 }
 
 /* Read the size and allocated fields from address p */
-static inline unsigned long long GET_SIZE(void * p) {
-    return (GET(p) & ~0x7);
+static inline unsigned GET_SIZE(void * hp) {
+    return (GET(hp) & ~0x7);
 }               
-static inline int GET_ALLOC(void * p) {
-    return (GET(p) & 0x1);
+static inline int GET_ALLOC(void * hp) {
+    return (GET(hp) & 0x1);
 }
 
 /* Given block ptr bp, compute address of its header and footer */
@@ -615,17 +634,18 @@ static inline char* HDRP(void * bp) {
     return ((char *)(bp) - WSIZE);
 } 
 
+// ALARM: this only works for free block
 static inline char* FTRP(void * bp) {
     return ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE);
 }
 
-/* Given block ptr bp, compute address of next and previous blocks */
 static inline char* NEXT_BLKP(void * bp) {
     return ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)));
 }
 
+// ALARM: this only works for free block
 static inline char* PREV_BLKP(void * bp) {
-    return ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)));
+    return ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE + 4)));
 }
 
 static inline void flag(void * hp) {
