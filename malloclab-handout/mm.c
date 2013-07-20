@@ -62,6 +62,7 @@
 
 /* Pack a size and allocated bit into a word */
 #define PACK(size, alloc)  ((size) | (alloc))
+#define PACK3(size, prev_free, alloc)  ((size) | (prev_free) | (alloc)) 
 
 /* Global variables */
 static char *heap_listp = 0;  /* Pointer to first block */  
@@ -304,10 +305,6 @@ static int checkblock(void *bp)
         printf("Error: %p is not doubleword aligned\n", bp);
         return -1;
     }
-    // if (GET(HDRP(bp)) != GET(FTRP(bp))) {
-    //     printf("Error[%p]: header does not match footer\n", bp);
-    //     return -1;
-    // }
     return 0;
 }
 
@@ -370,10 +367,8 @@ static void *coalesce(void *bp)
     else if (prev_alloc && !next_alloc) {      /* Case 2 */
         delete_entry(get_level(GET_SIZE(HDRP(NEXT_BLKP(bp)))), NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
-        PUT(HDRP(bp), PACK(size, 0));
-        PUT(FTRP(bp), PACK(size,0));
-        flag(HDRP(bp));
-        flag(FTRP(bp));
+        PUT(HDRP(bp), PACK3(size, 2, 0));
+        PUT(FTRP(bp), PACK3(size, 2, 0));
     }
     else if (!prev_alloc && next_alloc) {      /* Case 3 */
         delete_entry(get_level(GET_SIZE(HDRP(PREV_BLKP(bp)))), PREV_BLKP(bp));
@@ -414,12 +409,9 @@ static void *extend_heap(size_t words)
     int prev_alloc = is_prev_alloc(HDRP(bp));
 
     /* Initialize free block header/footer and the epilogue header */
-    PUT(HDRP(bp), PACK(size, 0));         /* Free block header */   
-    PUT(FTRP(bp), PACK(size, 0));         /* Free block footer */   
+    PUT(HDRP(bp), PACK3(size, prev_alloc << 1, 0));         /* Free block header */   
+    PUT(FTRP(bp), PACK3(size, prev_alloc << 1, 0));         /* Free block footer */   
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); /* New epilogue header */ 
-    if (prev_alloc) {
-        flag(HDRP(bp));
-    }
 
     /* Coalesce if the previous block was free */
     return coalesce(bp);
@@ -438,12 +430,8 @@ static void place(void *bp, size_t asize){
         set_size(HDRP(bp), asize);
         mark_alloc(HDRP(bp));
         bp = NEXT_BLKP(bp);
-        set_size(HDRP(bp), csize-asize);
-        set_size(FTRP(bp), csize-asize);
-        mark_free(HDRP(bp));
-        mark_free(FTRP(bp));        
-        flag(HDRP(bp));
-        flag(FTRP(bp));        
+        PUT(HDRP(bp), PACK3(csize-asize, 2, 0));
+        PUT(FTRP(bp), PACK3(csize-asize, 2, 0));  
         insert_entry(get_level(GET_SIZE(HDRP(bp))), bp);
     }else { 
         delete_entry(get_level(GET_SIZE(HDRP(bp))), bp);
