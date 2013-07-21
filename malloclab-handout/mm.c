@@ -63,8 +63,9 @@
 #define PACK3(size, prev_free, alloc)  ((size) | (prev_free) | (alloc)) 
 
 /* Global variables */
-static char *heap_listp = 0;  /* Pointer to first block */  
+static char *heap_listp = 0;      /* Pointer to first block */  
 static char *flist_tbl = NULL;    /* Pointer to free list table */
+static char *heap_tailp = NULL;   /* Pointer to last block(except epilogue) */
 
 /* free list item type */
 typedef struct {
@@ -191,7 +192,11 @@ void *malloc (size_t size) {
     mm_checkheap(1);
     printf("malloc: before extend_heap.]]\n");    
 #endif        
-    extendsize = MAX(asize,CHUNKSIZE);                
+    int tail_free = 0; // the free space we have in the tail of heap
+    if (heap_tailp && !GET_ALLOC(HDRP(heap_tailp))) {
+        tail_free = GET_SIZE(HDRP(heap_tailp));
+    }
+    extendsize = MAX(asize - tail_free,CHUNKSIZE);
     bp = extend_heap(extendsize/WSIZE);
     if (bp == NULL) 
         return NULL;
@@ -385,25 +390,36 @@ static void *coalesce(void *bp)
         /* nop */
     }
     else if (prev_alloc && !next_alloc) {      /* Case 2 */
+        if (heap_tailp == NEXT_BLKP(bp)) {
+            heap_tailp = bp;
+        }
         delete_entry(get_level(GET_SIZE(HDRP(NEXT_BLKP(bp)))), NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK3(size, 2, 0));
         PUT(FTRP(bp), PACK3(size, 2, 0));
     }
     else if (!prev_alloc && next_alloc) {      /* Case 3 */
+        int t = (bp == heap_tailp);
         delete_entry(get_level(GET_SIZE(HDRP(PREV_BLKP(bp)))), PREV_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
         set_size(FTRP(bp), size);
         set_size(HDRP(PREV_BLKP(bp)), size);
         bp = PREV_BLKP(bp);
+        if (t) {
+            heap_tailp = bp;
+        }
     }
     else {                                     /* Case 4 */
+        int t = (NEXT_BLKP(bp) == heap_tailp);
         delete_entry(get_level(GET_SIZE(HDRP(PREV_BLKP(bp)))), PREV_BLKP(bp));
         delete_entry(get_level(GET_SIZE(HDRP(NEXT_BLKP(bp)))), NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) +  GET_SIZE(FTRP(NEXT_BLKP(bp)));
         set_size(HDRP(PREV_BLKP(bp)), size);
         set_size(FTRP(NEXT_BLKP(bp)), size);
         bp = PREV_BLKP(bp);
+        if (t) {
+            heap_tailp = bp;
+        }
     }
     unflag(HDRP(NEXT_BLKP(bp)));    
     insert_entry(get_level(GET_SIZE(HDRP(bp))), bp);
@@ -436,7 +452,8 @@ static void *extend_heap(size_t words)
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); /* New epilogue header */ 
 
     /* Coalesce if the previous block was free */
-    return coalesce(bp);
+    heap_tailp = coalesce(bp);
+    return heap_tailp;
 }
 
 /* 
@@ -448,6 +465,7 @@ static void place(void *bp, size_t asize){
 
     if (is_valid_block(csize - asize)) {  
         /* we want to make sure the new free block satisfy the minimum requirement */            
+        int t = (bp == heap_tailp);
         delete_entry(get_level(GET_SIZE(HDRP(bp))), bp); /* remove the record in the free block list */
         set_size(HDRP(bp), asize);
         mark_alloc(HDRP(bp));
@@ -455,6 +473,9 @@ static void place(void *bp, size_t asize){
         PUT(HDRP(bp), PACK3(csize-asize, 2, 0));
         PUT(FTRP(bp), PACK3(csize-asize, 2, 0));  
         insert_entry(get_level(GET_SIZE(HDRP(bp))), bp);
+        if (t) {
+            heap_tailp = bp;
+        }
     }else { 
         delete_entry(get_level(GET_SIZE(HDRP(bp))), bp);
         mark_alloc(HDRP(bp));
