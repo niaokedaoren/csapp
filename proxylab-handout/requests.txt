@@ -1,0 +1,8 @@
+GET http://www.baidu.com/index.html HTTP/1.0
+Host: baidu.com
+
+GET http://www.aol.com/ HTTP/1.0
+Host: aol.com
+
+GET http://www.aol.com HTTP/1.0
+Host: aol.com
