@@ -1,0 +1,14 @@
+GET http://www.baidu.com/index.html HTTP/1.0
+Host: baidu.com
+
+GET http://www.aol.com/ HTTP/1.0
+Host: aol.com
+
+GET http://www.aol.com HTTP/1.0
+Host: aol.com
+
+GET http://ipondering.me HTTP/1.0
+Host: ipondering.me
+
+GET http://www.cs.cmu.edu/~rwh/ HTTP/1.0
+Host: cmu.edu
