@@ -27,6 +27,8 @@ typedef struct {
     jmp_buf error_buf;
 } thread_control_t;
 
+typedef struct sockaddr_in SAI;
+
 thread_control_t threads[POOL_SIZE];
 
 /*********************************
@@ -48,6 +50,7 @@ void  sigpipe_handler(int sig);
 
 /* my own wrapper of rio package, suffix _p means polite. */
 void Rio_writen_p(int fd, void *usrbuf, size_t n);
+int  Open_clientfd_p(char *hostname, int port);
 
 #ifdef DEBUG
 # define dbg_printf(...) printf(__VA_ARGS__)
@@ -161,7 +164,11 @@ void request(int reply_to_fd, char *hostp, char *pathp, int port, header_t heade
     dbg_printf("[request %d] started.\n", (int)reply_to_fd);
     rio_t rio;
     char buf[MAXLINE];
-    int clientfd = Open_clientfd(hostp, port);
+    int clientfd = Open_clientfd_p(hostp, port);
+    if (clientfd < 0) {
+        client_error(reply_to_fd, "", "1000", "DNS failed", "DNS failed");
+        return;
+    }
 
     /* non-local exit*/
     int ctrl_index = thread_control_index(pthread_self());
@@ -170,11 +177,13 @@ void request(int reply_to_fd, char *hostp, char *pathp, int port, header_t heade
         return;
     }
     if (setjmp(threads[ctrl_index].error_buf) != 0) { 
-        Close(clientfd);
+        if(clientfd > 0) 
+            Close(clientfd); /* may jmp here cause clientfd create failure */
         return; /* back from error*/
     }
     if (sigsetjmp(threads[ctrl_index].pipe_buf, 1) != 0) {
-        Close(clientfd);        
+        if(clientfd > 0) 
+            Close(clientfd); /* may jmp here cause clientfd create failure */
         return; /* back from SIGPIPE */
     }
 
@@ -346,6 +355,48 @@ int thread_control_index(pthread_t tid) {
         if (threads[i].tid == tid) {
             return i;
         }
+    }
+    return -1;
+}
+
+int Open_clientfd_p(char *hostname, int port) {
+    struct addrinfo hints;
+    struct addrinfo *result, *rp;
+    char portp[20];
+    int sfd, s;
+
+    sprintf(portp, "%d", port);
+    /* Obtain address(es) matching host/port */
+    memset(&hints, 0, sizeof(struct addrinfo));
+    hints.ai_family = AF_INET;    /* Allow IPv4 */
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = 0;
+    hints.ai_protocol = 0;          /* Any protocol */
+
+    s = getaddrinfo(hostname, portp, &hints, &result);
+    if (s != 0) {
+        dbg_printf("[Error]getaddrinfo: %s\n", gai_strerror(s));
+        return -1;
+    }
+
+    /* getaddrinfo() returns a list of address structures.
+       Try each address until we successfully connect(2).
+       If socket(2) (or connect(2)) fails, we (close the socket
+       and) try the next address. */
+
+    for (rp = result; rp != NULL; rp = rp->ai_next) {
+        sfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        dbg_printf("[DNS]%s(%s:%d)\n", hostname, 
+            inet_ntoa(((SAI*)(rp->ai_addr))->sin_addr), ntohs(((SAI*)(rp->ai_addr))->sin_port));
+        if (sfd == -1)
+            continue;
+        if (connect(sfd, rp->ai_addr, rp->ai_addrlen) != -1)
+            return sfd;                  /* Success */
+    }
+
+    if (rp == NULL) {               /* No address succeeded */
+        dbg_printf("[Error]Could not connect\n");
+        return -1;
     }
     return -1;
 }
