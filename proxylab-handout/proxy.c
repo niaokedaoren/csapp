@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include "csapp.h"
 #include "sbuf.h"
+#include "cache.h"
 
 /*********************************
  * Variables and Types
@@ -28,13 +29,14 @@ typedef struct {
 typedef struct sockaddr_in SAI;
 
 thread_control_t threads[POOL_SIZE];
+static cache_t cache;
 
 /*********************************
  * Function prototype
  *********************************/
 void* thread(void * p); 
 void  serve_client(int fd);
-void  request(int fd, char *hostp, char *pathp, int port, header_t headers, int hc);
+void  request(int fd, char *uri, char *hostp, char *pathp, int port, header_t headers, int hc);
 
 int   need_header(char *k, header_t headers, int *hc);
 void  append_header(char *k, char *v, header_t headers, int *hc);
@@ -70,6 +72,7 @@ int main(int argc, char **argv){
     port = atoi(argv[1]);
     listenfd = Open_listenfd(port);
     sbuf_init(&sbuf, SBUFSIZE);
+    cache_init(&cache);
 
     dbg_printf("Proxy server running...\n");
     for (i = 0; i < POOL_SIZE; i++)  { /* Create worker threads */
@@ -133,7 +136,7 @@ void serve_client(int fd) {
     append_header(proxy_conns[0], proxy_conns[1], headers, &hc);
     if (need_header("Host", headers, &hc)) 
         append_header("Host", host, headers, &hc);
-    request(fd, host, path, port, headers, hc);
+    request(fd, uri, host, path, port, headers, hc);
     dbg_printf("[Disconnected %d]\n", (int)fd);
 }
 
@@ -158,10 +161,11 @@ int parse_request_method(int fd, char *buf, char *method, char *uri, char *versi
     return 0;
 }
 
-void request(int reply_to_fd, char *hostp, char *pathp, int port, header_t headers, int hc) {
+void request(int reply_to_fd, char *uri, char *hostp, char *pathp, int port, header_t headers, int hc) {
     dbg_printf("[request %d] started.\n", (int)reply_to_fd);
     rio_t rio;
-    char buf[MAXLINE];
+    char buf[MAXLINE], data[MAX_OBJECT_SIZE];
+    int data_size = 0, i;
     int clientfd = Open_clientfd_p(hostp, port);
     if (clientfd < 0) {
         client_error(reply_to_fd, "", "1000", "DNS failed", "DNS failed");
@@ -185,30 +189,53 @@ void request(int reply_to_fd, char *hostp, char *pathp, int port, header_t heade
         return; /* back from SIGPIPE */
     }
 
-    Rio_readinitb(&rio, clientfd);
-    sprintf(buf, "GET %s HTTP/1.0\r\n", pathp);
-    dbg_printf("[request %d] %s", (int)reply_to_fd, buf);
-    Rio_writen_p(clientfd, buf, strlen(buf));
-
-    int i;
-    for (i = 0; i < hc; ++i) {
-        sprintf(buf, "%s: %s\r\n", headers[i][0], headers[i][1]);
+    int hit = find_hit(&cache, uri);
+    if (hit >= 0) { /* hit */
+        get_hit(&cache, uri, data, &data_size);
+        dbg_printf("[request %d] cache hit, %d bytes.\n", (int)reply_to_fd, data_size);
+        dbg_printf("[request %d] forwarding.", (int)reply_to_fd);
+        Rio_writen_p(reply_to_fd, data, data_size);
+        Close(clientfd);
+        dbg_printf("\n[request %d] forwarding done.\n", (int)reply_to_fd);        
+    } else { /* miss */
+        Rio_readinitb(&rio, clientfd);
+        sprintf(buf, "GET %s HTTP/1.0\r\n", pathp);
+        dbg_printf("[request %d] %s", (int)reply_to_fd, buf);
         Rio_writen_p(clientfd, buf, strlen(buf));
+        for (i = 0; i < hc; ++i) {
+            sprintf(buf, "%s: %s\r\n", headers[i][0], headers[i][1]);
+            Rio_writen_p(clientfd, buf, strlen(buf));
+        }
+        sprintf(buf, "\r\n");
+        Rio_writen_p(clientfd, buf, strlen(buf));
+        
+        i = 0;
+        int byteread;
+        char *current = data;
+        dbg_printf("[request %d] forwarding.\n", (int)reply_to_fd);
+        while ((byteread = Rio_readnb(&rio, buf, MAXLINE))) {
+            data_size += byteread;
+            if (data_size <= MAX_OBJECT_SIZE) {
+                memcpy(current, buf, byteread);
+                current += byteread;
+            }
+            Rio_writen_p(reply_to_fd, buf, strlen(buf));
+        }
+        if (data_size <= MAX_OBJECT_SIZE) {
+            if (data_size + cache.total_size <= MAX_CACHE_SIZE) { 
+                // store
+                store(&cache, uri, data, data_size);
+                dbg_printf("[request %d] cache miss, store %d bytes.\n", (int)reply_to_fd, data_size);
+            } else { 
+                // evict
+                evict(&cache, uri, data, data_size);
+                dbg_printf("[request %d] cache miss, evict %d bytes.\n", (int)reply_to_fd, data_size);
+            }
+        }
+        Close(clientfd);
+        dbg_printf("[request %d] forwarding done, %d bytes.\n", (int)reply_to_fd, data_size);    
     }
 
-    sprintf(buf, "\r\n");
-    Rio_writen_p(clientfd, buf, strlen(buf));
-
-    i = 0;
-    dbg_printf("[request %d] forwarding.", (int)reply_to_fd);
-    while (Rio_readlineb(&rio, buf, MAXLINE)) {
-        i++;
-        if (i % 20 == 0)
-            dbg_printf(".");
-        Rio_writen_p(reply_to_fd, buf, strlen(buf));
-    }
-    Close(clientfd);
-    dbg_printf("\n[request %d] forwarding done.\n", (int)reply_to_fd);    
 }
 
 int parse_request_header(rio_t *rp, header_t headersp, int *hc) {

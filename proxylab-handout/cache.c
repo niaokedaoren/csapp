@@ -52,7 +52,7 @@ int find_hit(cache_t *c, char *tag) {
     return res;
 }
 
-void get_hit(cache_t *c, char *tag, cache_item_t *t) {
+void get_hit(cache_t *c, char *tag, char *t, int *size) {
     P(&cnt_mutex_);
     read_cnt_++;
     if (read_cnt_ == 1) /* first in */
@@ -63,7 +63,8 @@ void get_hit(cache_t *c, char *tag, cache_item_t *t) {
 
     for (h = c->head; h != NULL; h = h->next) {
         if (!strcmp(h->tag, tag)) { /* tag matches */
-            memcpy(t, h, sizeof(cache_item_t));
+            memcpy(t, h->data, h->size);
+            *size = h->size;
             h->age = 0;
         } else {
             h->age += 1;

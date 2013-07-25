@@ -24,7 +24,7 @@ void cache_init(cache_t *c);
 void cache_deinit(cache_t *c);
 
 int  find_hit(cache_t *c, char *tag);
-void get_hit(cache_t *c, char *tag, cache_item_t *t);
+void get_hit(cache_t *c, char *tag, char *t, int *size);
 void store(cache_t *c, char *tag, char *data, int size);
 void evict(cache_t *c, char *tag, char *data, int size);
 
