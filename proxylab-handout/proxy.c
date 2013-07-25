@@ -5,8 +5,6 @@
 /*********************************
  * Variables and Types
  *********************************/
-#define MAX_CACHE_SIZE 1049000
-#define MAX_OBJECT_SIZE 102400
 #define MAX_HEADER 40
 #define POOL_SIZE 4 /* thread pool size */
 #define SBUFSIZE  16 

@@ -10,10 +10,13 @@ csapp.o: csapp.c csapp.h
 sbuf.o: sbuf.c sbuf.h
 	$(CC) $(CFLAGS) -c sbuf.c	
 
+cache.o: cache.c cache.h	
+	$(CC) $(CFLAGS) -c cache.c		
+
 proxy.o: proxy.c csapp.h
 	$(CC) $(CFLAGS) -c proxy.c
 
-proxy: proxy.o csapp.o sbuf.o
+proxy: proxy.o csapp.o sbuf.o cache.o
 
 submit:
 	(make clean; cd ..; tar cvf proxylab.tar proxylab-handout)
