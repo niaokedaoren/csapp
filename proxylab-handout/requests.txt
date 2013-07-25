@@ -6,3 +6,19 @@ Host: aol.com
 
 GET http://www.aol.com HTTP/1.0
 Host: aol.com
+
+GET http://ipondering.me HTTP/1.0
+Host: ipondering.me
+
+GET http://www.cs.cmu.edu/~rwh/ HTTP/1.0
+Host: cmu.edu
+
+GET http://www.cs.cmu.edu/ HTTP/1.0
+Host: cmu.edu
+
+GET http://youtube.com/ HTTP/1.0
+Host: youtube.com
+
+GET http://www.nytimes.com/ HTTP/1.0
+Host: nytimes.com
+>>>>>>> proxy
