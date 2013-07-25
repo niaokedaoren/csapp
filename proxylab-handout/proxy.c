@@ -39,6 +39,7 @@ void  request(int fd, char *hostp, char *pathp, int port, header_t headers, int 
 int   need_header(char *k, header_t headers, int *hc);
 void  append_header(char *k, char *v, header_t headers, int *hc);
 int   parse_request_header(rio_t *rp, header_t headers, int *hc);
+int   parse_request_method(int fd, char *buf, char *method, char *uri, char *version, char *host, char *path, int *port);
 int   is_header(char *s);
 int   thread_control_index(pthread_t tid);
 void  client_error(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg);
@@ -53,7 +54,6 @@ void Rio_writen_p(int fd, void *usrbuf, size_t n);
 #else
 # define dbg_printf(...)
 #endif
-
 
 int main(int argc, char **argv){
     int listenfd, connfd, port, clientlen;
@@ -101,6 +101,7 @@ void *thread(void *p) {
         serve_client(connfd);            /* Service client */
         Close(connfd);
     }
+    return NULL;
 } 
 
 void serve_client(int fd) {
@@ -108,21 +109,7 @@ void serve_client(int fd) {
     header_t headers; /* header provided by user agent and proxy server */
     int hc = 0; /* header count */
     int port = 80;
-    int ctrl_index;
     rio_t rio;
-
-    /* non-local exit*/
-    ctrl_index = thread_control_index(pthread_self());
-    if (ctrl_index < 0) {
-        dbg_printf("[Error]thread do not have related jmp_buf.\n");
-        return;
-    }
-    if (setjmp(threads[ctrl_index].error_buf) != 0) { 
-        return; /* back from error*/
-    }
-    if (sigsetjmp(threads[ctrl_index].pipe_buf, 1) != 0) {
-        return; /* back from SIGPIPE */
-    }
 
     dbg_printf("[Connected %d]\n", (int)fd);
 
@@ -131,21 +118,7 @@ void serve_client(int fd) {
     if (Rio_readlineb(&rio, buf, MAXLINE) <= 0) {
         return;
     }
-    sscanf(buf, "%s %s %s", method, uri, version);       
-    if (strcasecmp(method, "GET")) {                     
-        client_error(fd, method, "501", "Not Implemented", "Does not implement this method");
-        return;
-    }
-    if (strlen(uri) == 0) {
-        client_error(fd, uri, "400", "Bad Request", "Missing uri");
-        return;
-    }
-    if (strcasecmp(version, "HTTP/1.0") && strcasecmp(version, "HTTP/1.1")) {
-        client_error(fd, version, "400", "Bad Request", "Version not match");
-        return;
-    }                                                                                                                                                            
-    if (parse_uri(uri, host, path, &port) < 0) {
-        client_error(fd, uri, "400", "Bad Request", "Malformed uri");
+    if (parse_request_method(fd, buf, method, uri, version, host, path, &port) < 0) {
         return;
     }
     if (parse_request_header(&rio, headers, &hc) < 0) {
@@ -161,6 +134,74 @@ void serve_client(int fd) {
         append_header("Host", host, headers, &hc);
     request(fd, host, path, port, headers, hc);
     dbg_printf("[Disconnected %d]\n", (int)fd);
+}
+
+int parse_request_method(int fd, char *buf, char *method, char *uri, char *version, char *host, char *path, int *port) {
+    sscanf(buf, "%s %s %s", method, uri, version);       
+    if (strcasecmp(method, "GET")) {                     
+        client_error(fd, method, "501", "Not Implemented", "Does not implement this method");
+        return -1;
+    }
+    if (strlen(uri) == 0) {
+        client_error(fd, uri, "400", "Bad Request", "Missing uri");
+        return -1;
+    }
+    if (strcasecmp(version, "HTTP/1.0") && strcasecmp(version, "HTTP/1.1")) {
+        client_error(fd, version, "400", "Bad Request", "Version not match");
+        return -1;
+    }                                                                                                                                                            
+    if (parse_uri(uri, host, path, port) < 0) {
+        client_error(fd, uri, "400", "Bad Request", "Malformed uri");
+        return -1;
+    }
+    return 0;
+}
+
+void request(int reply_to_fd, char *hostp, char *pathp, int port, header_t headers, int hc) {
+    dbg_printf("[request %d] started.\n", (int)reply_to_fd);
+    rio_t rio;
+    char buf[MAXLINE];
+    int clientfd = Open_clientfd(hostp, port);
+
+    /* non-local exit*/
+    int ctrl_index = thread_control_index(pthread_self());
+    if (ctrl_index < 0) {
+        dbg_printf("[Error]thread do not have related jmp_buf.\n");
+        return;
+    }
+    if (setjmp(threads[ctrl_index].error_buf) != 0) { 
+        Close(clientfd);
+        return; /* back from error*/
+    }
+    if (sigsetjmp(threads[ctrl_index].pipe_buf, 1) != 0) {
+        Close(clientfd);        
+        return; /* back from SIGPIPE */
+    }
+
+    Rio_readinitb(&rio, clientfd);
+    sprintf(buf, "GET %s HTTP/1.0\r\n", pathp);
+    dbg_printf("[request %d] %s", (int)reply_to_fd, buf);
+    Rio_writen_p(clientfd, buf, strlen(buf));
+
+    int i;
+    for (i = 0; i < hc; ++i) {
+        sprintf(buf, "%s: %s\r\n", headers[i][0], headers[i][1]);
+        Rio_writen_p(clientfd, buf, strlen(buf));
+    }
+
+    sprintf(buf, "\r\n");
+    Rio_writen_p(clientfd, buf, strlen(buf));
+
+    i = 0;
+    dbg_printf("[request %d] forwarding.", (int)reply_to_fd);
+    while (Rio_readlineb(&rio, buf, MAXLINE)) {
+        i++;
+        if (i % 20 == 0)
+            dbg_printf(".");
+        Rio_writen_p(reply_to_fd, buf, strlen(buf));
+    }
+    Close(clientfd);
+    dbg_printf("\n[request %d] forwarding done.\n", (int)reply_to_fd);    
 }
 
 int parse_request_header(rio_t *rp, header_t headersp, int *hc) {
@@ -190,38 +231,6 @@ int parse_request_header(rio_t *rp, header_t headersp, int *hc) {
         Rio_readlineb(rp, buf, MAXLINE);
     }
     return 0;
-}
-
-void request(int reply_to_fd, char *hostp, char *pathp, int port, header_t headers, int hc) {
-    dbg_printf("[request %d] started.\n", (int)reply_to_fd);
-    rio_t rio;
-    char buf[MAXLINE];
-    int clientfd = Open_clientfd(hostp, port);
-
-    Rio_readinitb(&rio, clientfd);
-    sprintf(buf, "GET %s HTTP/1.0\r\n", pathp);
-    dbg_printf("[request %d] %s", (int)reply_to_fd, buf);
-    Rio_writen_p(clientfd, buf, strlen(buf));
-
-    int i;
-    for (i = 0; i < hc; ++i) {
-        sprintf(buf, "%s: %s\r\n", headers[i][0], headers[i][1]);
-        Rio_writen_p(clientfd, buf, strlen(buf));
-    }
-
-    sprintf(buf, "\r\n");
-    Rio_writen_p(clientfd, buf, strlen(buf));
-
-    i = 0;
-    dbg_printf("[request %d] forwarding.", (int)reply_to_fd);
-    while (Rio_readlineb(&rio, buf, MAXLINE)) {
-        i++;
-        if (i % 10 == 0)
-            dbg_printf(".");
-        Rio_writen_p(reply_to_fd, buf, strlen(buf));
-    }
-    Close(clientfd);
-    dbg_printf("\n[request %d] forwarding done.\n", (int)reply_to_fd);    
 }
 
 void client_error(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg) {
