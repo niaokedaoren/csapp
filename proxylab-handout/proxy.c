@@ -100,7 +100,9 @@ int main(int argc, char **argv){
         Pthread_create(&tid, NULL, thread, (void*)i);
     }
 
+#ifdef DEBUG
     Pthread_create(&tid, NULL, report_cache, NULL);
+#endif    
 
     /* installing signal handler */
     Signal(SIGPIPE, sigpipe_handler);
@@ -395,7 +397,7 @@ void *report_cache(void *p) {
     Pthread_detach(pthread_self());
     while (1) {
         printf("/****************************************\n");
-        printf(" *total_size:%d, items:%d\n", cache.total_size, cache.item_count);
+        printf(" * total_size:%d, items:%d\n", cache.total_size, cache.item_count);
         int i = 0;
         cache_item_t *h = cache.head;
         while (h) {
@@ -404,7 +406,7 @@ void *report_cache(void *p) {
             h = h->next;
         }
         printf(" ****************************************/\n");        
-        Sleep(20);
+        Sleep(5);
     }
     return NULL;
 }

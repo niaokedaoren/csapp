@@ -6,6 +6,8 @@ static sem_t write_mutex_;
 static sem_t cnt_mutex_;
 static int read_cnt_;
 
+static void _ages(cache_t *c);
+
 void cache_init(cache_t *c) {
     Sem_init(&write_mutex_, 0, 1);
     Sem_init(&cnt_mutex_, 0, 1);
@@ -53,12 +55,7 @@ int find_hit(cache_t *c, char *tag) {
 }
 
 void get_hit(cache_t *c, char *tag, char *t, int *size) {
-    P(&cnt_mutex_);
-    read_cnt_++;
-    if (read_cnt_ == 1) /* first in */
-        P(&write_mutex_);
-    V(&cnt_mutex_);
-
+    P(&write_mutex_);
     cache_item_t *h;
 
     for (h = c->head; h != NULL; h = h->next) {
@@ -70,12 +67,7 @@ void get_hit(cache_t *c, char *tag, char *t, int *size) {
             h->age += 1;
         }
     }
-
-    P(&cnt_mutex_);
-    read_cnt_--;
-    if (read_cnt_ == 0) /* last out */
-        V(&write_mutex_); 
-    V(&cnt_mutex_);    
+    V(&write_mutex_); 
 }
 
 void store(cache_t *c, char *tag, char *data, int size) {
@@ -86,12 +78,13 @@ void store(cache_t *c, char *tag, char *data, int size) {
     item->data = Malloc(size);
     strcpy(item->tag, tag);
     memcpy(item->data, data, size);
-    item->age = 0;
     item->size = size;
     item->next = c->head;
     c->head = item;
     c->total_size += size;
     c->item_count ++;
+    _ages(c);
+    item->age = 0;
     V(&write_mutex_);
 }
 
@@ -113,6 +106,15 @@ void evict(cache_t *c, char *tag, char *data, int size) {
     strcpy(to_evict->tag, tag);
     memcpy(to_evict->data, data, size);
     to_evict->size = size;
+    _ages(c);
     to_evict->age = 0;
     V(&write_mutex_);
+}
+
+static void _ages(cache_t *c) {
+    cache_item_t* h = c->head;
+    while (h) {
+        h->age ++;
+        h = h->next;
+    }
 }
