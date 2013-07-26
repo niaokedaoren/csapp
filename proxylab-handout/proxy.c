@@ -2,11 +2,11 @@
 #include "csapp.h"
 #include "sbuf.h"
 #include "cache.h"
+#include "util.h"
 
 /*********************************
  * Variables and Types
  *********************************/
-#define MAX_HEADER 40
 #define POOL_SIZE 4 /* thread pool size */
 #define SBUFSIZE  16 
 
@@ -18,8 +18,7 @@ static char *proxy_conns[2] = {"Proxy-Connection", "close"};
 
 static sbuf_t sbuf; /* shared buffer of connected descriptors */
 
-typedef char header_t[MAX_HEADER][2][MAXLINE]; /* store HTTP request header */
-
+/* exceptional control for thread */
 typedef struct {
     pthread_t tid;
     jmp_buf pipe_buf;
@@ -34,34 +33,51 @@ static cache_t cache;
 /*********************************
  * Function prototype
  *********************************/
+/* work thread main routine */
 void* thread(void * p); 
-void  serve_client(int fd);
-void  request(int fd, char *uri, char *hostp, char *pathp, int port, header_t headers, int hc);
 
-int   need_header(char *k, header_t headers, int *hc);
-void  append_header(char *k, char *v, header_t headers, int *hc);
-int   parse_request_header(rio_t *rp, header_t headers, int *hc);
-int   parse_request_method(int fd, char *buf, char *method, char *uri, char *version, char *host, char *path, int *port);
-int   is_header(char *s);
+/* serve one connection */
+void  serve_client(int fd);
+
+/* request as a proxy and send back response to client */
+void  request(int fd, char *uri, char *hp, char *pathp, 
+              int port, header_t hs, int hc);
+
+/* return current thread's index in thread pool */
 int   thread_control_index(pthread_t tid);
-void  client_error(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg);
-int   parse_uri(char *uri, char *target_addr, char *path, int  *port);
+
+/* SIGPIPE handler */
 void  sigpipe_handler(int sig);
 
+/* reply client about error */
+void  client_error(int fd, char *cause, char *errnum, 
+                   char *shortmsg, char *longmsg);
+
+/* parse client's request method line */
+int   parse_method(int fd, char *buf, char *method, char *uri, 
+                   char *version, char *host, char *path, int *port);
+
+/* parse client's request's header */
+int   parse_header(rio_t *rp, header_t headers, int *hc, int fd, char *uri);
+
 /* my own wrapper of rio package, suffix _p means polite. */
-void Rio_writen_p(int fd, void *usrbuf, size_t n);
-int  Open_clientfd_p(char *hostname, int port);
+void rio_writen_p(int fd, void *usrbuf, size_t n);
+int  open_clientfd_p(char *hostname, int port);
 
-#ifdef DEBUG
-# define dbg_printf(...) printf(__VA_ARGS__)
-#else
-# define dbg_printf(...)
-#endif
-
+/*
+ * main thread create a thread pool and go to a busy loop, which tirelessly accept 
+ * new connections and insert it into a thread-safe buffer.
+ *
+ * worker thread run in a loop that pop a connection's file descriptor from shared 
+ * buffer and proxy the traffic for that connection
+ */
 int main(int argc, char **argv){
-    int listenfd, connfd, port, clientlen;
+    int listenfd;
+    int connfd;
+    int port;
+    int clientlen;
     long i;
-    struct sockaddr_in clientaddr;
+    SAI clientaddr;
     pthread_t tid;
 
     /* Check arguments */
@@ -71,7 +87,9 @@ int main(int argc, char **argv){
     }
     port = atoi(argv[1]);
     listenfd = Open_listenfd(port);
+    /* init shared buffer */
     sbuf_init(&sbuf, SBUFSIZE);
+    /* init web object cache */
     cache_init(&cache);
 
     dbg_printf("Proxy server running...\n");
@@ -109,8 +127,13 @@ void *thread(void *p) {
 } 
 
 void serve_client(int fd) {
-    char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE], host[MAXLINE], path[MAXLINE];
-    header_t headers; /* header provided by user agent and proxy server */
+    char buf[MAXLINE];
+    char method[MAXLINE];
+    char uri[MAXLINE];
+    char version[MAXLINE];
+    char host[MAXLINE];
+    char path[MAXLINE];
+    header_t headers; 
     int hc = 0; /* header count */
     int port = 80;
     rio_t rio;
@@ -119,16 +142,11 @@ void serve_client(int fd) {
 
     /* Read request line and headers */
     Rio_readinitb(&rio, fd);
-    if (Rio_readlineb(&rio, buf, MAXLINE) <= 0) {
-        return;
-    }
-    if (parse_request_method(fd, buf, method, uri, version, host, path, &port) < 0) {
-        return;
-    }
-    if (parse_request_header(&rio, headers, &hc) < 0) {
-        client_error(fd, uri, "400", "Bad Request", "Incomplete requset");
-        return;
-    }
+    if (Rio_readlineb(&rio, buf, MAXLINE) <= 0) return;
+    if (parse_method(fd, buf, method, uri, version, host, path, &port) < 0) return;
+    if (parse_header(&rio, headers, &hc, fd, uri) < 0) return;
+
+    /* construct header */
     append_header(user_agent[0], user_agent[1], headers, &hc);
     append_header(accepts[0], accepts[1], headers, &hc);
     append_header(accept_encoding[0], accept_encoding[1], headers, &hc);
@@ -136,57 +154,40 @@ void serve_client(int fd) {
     append_header(proxy_conns[0], proxy_conns[1], headers, &hc);
     if (need_header("Host", headers, &hc)) 
         append_header("Host", host, headers, &hc);
+
     request(fd, uri, host, path, port, headers, hc);
     dbg_printf("[Disconnected %d]\n", (int)fd);
 }
 
-int parse_request_method(int fd, char *buf, char *method, char *uri, char *version, char *host, char *path, int *port) {
-    sscanf(buf, "%s %s %s", method, uri, version);       
-    if (strcasecmp(method, "GET")) {                     
-        client_error(fd, method, "501", "Not Implemented", "Does not implement this method");
-        return -1;
-    }
-    if (strlen(uri) == 0) {
-        client_error(fd, uri, "400", "Bad Request", "Missing uri");
-        return -1;
-    }
-    if (strcasecmp(version, "HTTP/1.0") && strcasecmp(version, "HTTP/1.1")) {
-        client_error(fd, version, "400", "Bad Request", "Version not match");
-        return -1;
-    }                                                                                                                                                            
-    if (parse_uri(uri, host, path, port) < 0) {
-        client_error(fd, uri, "400", "Bad Request", "Malformed uri");
-        return -1;
-    }
-    return 0;
-}
-
-void request(int reply_to_fd, char *uri, char *hostp, char *pathp, int port, header_t headers, int hc) {
-    dbg_printf("[request %d] started.\n", (int)reply_to_fd);
+void request(int reply_to_fd, char *uri, char *hostp, 
+             char *pathp, int port, header_t headers, int hc) {
     rio_t rio;
-    char buf[MAXLINE], data[MAX_OBJECT_SIZE];
+    char buf[MAXLINE];
+    char data[MAX_OBJECT_SIZE];
     int data_size = 0, i;
-    int clientfd = Open_clientfd_p(hostp, port);
+    int clientfd = open_clientfd_p(hostp, port);
     if (clientfd < 0) {
         client_error(reply_to_fd, "", "1000", "DNS failed", "DNS failed");
         return;
     }
 
-    /* non-local exit*/
+    dbg_printf("[request %d] started.\n", (int)reply_to_fd);
+
+    /* control return to here from errors(SIGPIPE, ECONNRESET, close file descriptors and exit */
     int ctrl_index = thread_control_index(pthread_self());
     if (ctrl_index < 0) {
         dbg_printf("[Error]thread do not have related jmp_buf.\n");
         return;
     }
-    if (setjmp(threads[ctrl_index].error_buf) != 0) { 
-        if(clientfd > 0) 
-            Close(clientfd); /* may jmp here cause clientfd create failure */
-        return; /* back from error*/
+    if (setjmp(threads[ctrl_index].error_buf) != 0) {  /* back from ECONNRESET */
+        /* may jmp here cause clientfd create failure */
+        if(clientfd > 0) Close(clientfd); 
+        return; 
     }
-    if (sigsetjmp(threads[ctrl_index].pipe_buf, 1) != 0) {
-        if(clientfd > 0) 
-            Close(clientfd); /* may jmp here cause clientfd create failure */
-        return; /* back from SIGPIPE */
+    if (sigsetjmp(threads[ctrl_index].pipe_buf, 1) != 0) { /* back from SIGPIPE */
+        /* may jmp here cause clientfd create failure */
+        if(clientfd > 0) Close(clientfd); 
+        return; 
     }
 
     int hit = find_hit(&cache, uri);
@@ -194,21 +195,23 @@ void request(int reply_to_fd, char *uri, char *hostp, char *pathp, int port, hea
         get_hit(&cache, uri, data, &data_size);
         dbg_printf("[request %d] cache hit, %d bytes.\n", (int)reply_to_fd, data_size);
         dbg_printf("[request %d] forwarding.", (int)reply_to_fd);
-        Rio_writen_p(reply_to_fd, data, data_size);
+        rio_writen_p(reply_to_fd, data, data_size);
         Close(clientfd);
         dbg_printf("\n[request %d] forwarding done.\n", (int)reply_to_fd);        
     } else { /* miss */
+        /* send request */
         Rio_readinitb(&rio, clientfd);
         sprintf(buf, "GET %s HTTP/1.0\r\n", pathp);
         dbg_printf("[request %d] %s", (int)reply_to_fd, buf);
-        Rio_writen_p(clientfd, buf, strlen(buf));
+        rio_writen_p(clientfd, buf, strlen(buf));
         for (i = 0; i < hc; ++i) {
             sprintf(buf, "%s: %s\r\n", headers[i][0], headers[i][1]);
-            Rio_writen_p(clientfd, buf, strlen(buf));
+            rio_writen_p(clientfd, buf, strlen(buf));
         }
         sprintf(buf, "\r\n");
-        Rio_writen_p(clientfd, buf, strlen(buf));
+        rio_writen_p(clientfd, buf, strlen(buf));
         
+        /* receive response */
         i = 0;
         int byteread;
         char *current = data;
@@ -219,8 +222,10 @@ void request(int reply_to_fd, char *uri, char *hostp, char *pathp, int port, hea
                 memcpy(current, buf, byteread);
                 current += byteread;
             }
-            Rio_writen_p(reply_to_fd, buf, strlen(buf));
+            rio_writen_p(reply_to_fd, buf, strlen(buf));
         }
+
+        /* update cache */
         if (data_size <= MAX_OBJECT_SIZE) {
             if (data_size + cache.total_size <= MAX_CACHE_SIZE) { 
                 // store
@@ -235,133 +240,9 @@ void request(int reply_to_fd, char *uri, char *hostp, char *pathp, int port, hea
         Close(clientfd);
         dbg_printf("[request %d] forwarding done, %d bytes.\n", (int)reply_to_fd, data_size);    
     }
-
 }
 
-int parse_request_header(rio_t *rp, header_t headersp, int *hc) {
-    dbg_printf("parsing header.\n");
-    *hc = 0;
-    char buf[MAXLINE], k[MAXLINE], v[MAXLINE];
-    char *tok;
-
-    if (Rio_readlineb(rp, buf, MAXLINE) <= 0)
-        return -1; // user cancel input
-
-    while(strcmp(buf, "\r\n") && strcmp(buf, "\n")) {
-        tok = strchr(buf, ':');
-        if (!tok) {
-            return -1; // not key-value pair
-        } else {
-            *tok = '\0';
-            strcpy(k, buf);
-            tok += 1;
-            if (strlen(tok) < 3) return -1; // value too short
-            tok[strlen(tok)-2] = '\0';
-            strcpy(v, tok+1);
-            if (need_header(k, headersp, hc)) {
-                append_header(k, v, headersp, hc);
-            }
-        }
-        Rio_readlineb(rp, buf, MAXLINE);
-    }
-    return 0;
-}
-
-void client_error(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg) {
-    char buf[MAXLINE], body[MAXBUF];
-
-    /* Build the HTTP response body */
-    sprintf(body, "<html><title>Tiny Error</title>");
-    sprintf(body, "%s<body bgcolor=""ffffff"">\r\n", body);
-    sprintf(body, "%s%s: %s\r\n", body, errnum, shortmsg);
-    sprintf(body, "%s<p>%s: %s\r\n", body, longmsg, cause);
-    sprintf(body, "%s<hr><em>The Tiny Web server</em>\r\n", body);
-
-    /* Print the HTTP response */
-    sprintf(buf, "HTTP/1.0 %s %s\r\n", errnum, shortmsg);
-    Rio_writen_p(fd, buf, strlen(buf));
-    sprintf(buf, "Content-type: text/html\r\n");
-    Rio_writen_p(fd, buf, strlen(buf));
-    sprintf(buf, "Content-length: %d\r\n\r\n", (int)strlen(body));
-    Rio_writen_p(fd, buf, strlen(buf));
-    Rio_writen_p(fd, body, strlen(body));
-}
-
-/*
- * parse_uri - URI parser
- * 
- * Given a URI from an HTTP proxy GET request (i.e., a URL), extract
- * the host name, path name, and port.  The memory for hostname and
- * pathname must already be allocated and should be at least MAXLINE
- * bytes. Return -1 if there are any problems.
- */
-int parse_uri(char *uri, char *hostname, char *pathname, int *port)
-{
-    char *hostbegin;
-    char *hostend;
-    char *pathbegin;
-    int len;
-
-    if (strncasecmp(uri, "http://", 7) != 0) {
-       hostname[0] = '\0';
-       return -1;
-    }
-       
-    /* Extract the host name */
-    hostbegin = uri + 7;
-    hostend = strpbrk(hostbegin, " :/\r\n\0");
-    if (!hostend) {
-        hostend = hostbegin + strlen(hostbegin);
-        hostend[0] = '/';
-        hostend[1] = '\0';
-    }
-    len = hostend - hostbegin;
-    strncpy(hostname, hostbegin, len);
-    hostname[len] = '\0';
-    
-    /* Extract the port number */
-    *port = 80; /* default */
-    if (hostend && *hostend == ':')   
-        *port = atoi(hostend + 1);
-    
-    /* Extract the path */
-    pathbegin = strchr(hostbegin, '/');
-    if (pathbegin == NULL) {
-        pathname[0] = '/';
-        pathname[1] = '\0';
-    } else {
-        strcpy(pathname, pathbegin);
-    }
-    return 0;
-}
-
-int need_header(char *k, header_t headers, int *hc) {
-    // preset headers
-    if (!strcmp(k, "User-Agent")) return 0;
-    if (!strcmp(k, "Accepts")) return 0;
-    if (!strcmp(k, "Accept-Encoding")) return 0;
-    if (!strcmp(k, "Connection")) return 0;
-    if (!strcmp(k, "Proxy-Connection")) return 0;                
-    int i;
-    for (i = 0; i < *hc; ++i) {
-        if (!strcmp(headers[i][0], k)) return 0; // exist
-    }
-    return 1;
-}
-
-void append_header(char *k, char *v, header_t headers, int *hc) {
-    strcpy(headers[*hc][0], k);
-    strcpy(headers[*hc][1], v);    
-    *hc = *hc + 1;
-}
-
-void sigpipe_handler(int sig) {
-    dbg_printf("[Error]SIGPIPE caught, recovered.\n");
-    int ctrl_index = thread_control_index(pthread_self());
-    siglongjmp(threads[ctrl_index].pipe_buf, -1);
-}
-
-void Rio_writen_p(int fd, void *usrbuf, size_t n) {
+void rio_writen_p(int fd, void *usrbuf, size_t n) {
     if (rio_writen(fd, usrbuf, n) != n) {
         switch (errno) {
         case ECONNRESET:
@@ -374,17 +255,7 @@ void Rio_writen_p(int fd, void *usrbuf, size_t n) {
     }
 }
 
-int thread_control_index(pthread_t tid) {
-    int i;
-    for (i = 0; i < POOL_SIZE; ++i) {
-        if (threads[i].tid == tid) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-int Open_clientfd_p(char *hostname, int port) {
+int open_clientfd_p(char *hostname, int port) {
     struct addrinfo hints;
     struct addrinfo *result, *rp;
     char portp[20];
@@ -424,4 +295,93 @@ int Open_clientfd_p(char *hostname, int port) {
         return -1;
     }
     return -1;
+}
+
+int thread_control_index(pthread_t tid) {
+    int i;
+    for (i = 0; i < POOL_SIZE; ++i) {
+        if (threads[i].tid == tid) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void sigpipe_handler(int sig) {
+    dbg_printf("[Error]SIGPIPE caught, recovered.\n");
+    int ctrl_index = thread_control_index(pthread_self());
+    siglongjmp(threads[ctrl_index].pipe_buf, -1);
+}
+
+void client_error(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg) {
+    char buf[MAXLINE], body[MAXBUF];
+
+    /* Build the HTTP response body */
+    sprintf(body, "<html><title>Tiny Error</title>");
+    sprintf(body, "%s<body bgcolor=""ffffff"">\r\n", body);
+    sprintf(body, "%s%s: %s\r\n", body, errnum, shortmsg);
+    sprintf(body, "%s<p>%s: %s\r\n", body, longmsg, cause);
+    sprintf(body, "%s<hr><em>The Tiny Web server</em>\r\n", body);
+
+    /* Print the HTTP response */
+    sprintf(buf, "HTTP/1.0 %s %s\r\n", errnum, shortmsg);
+    rio_writen_p(fd, buf, strlen(buf));
+    sprintf(buf, "Content-type: text/html\r\n");
+    rio_writen_p(fd, buf, strlen(buf));
+    sprintf(buf, "Content-length: %d\r\n\r\n", (int)strlen(body));
+    rio_writen_p(fd, buf, strlen(buf));
+    rio_writen_p(fd, body, strlen(body));
+}
+
+int parse_method(int fd, char *buf, char *method, char *uri, char *version, char *host, char *path, int *port) {
+    sscanf(buf, "%s %s %s", method, uri, version);       
+    if (strcasecmp(method, "GET")) {                     
+        client_error(fd, method, "501", "Not Implemented", "Does not implement this method");
+        return -1;
+    }
+    if (strlen(uri) == 0) {
+        client_error(fd, uri, "400", "Bad Request", "Missing uri");
+        return -1;
+    }
+    if (strcasecmp(version, "HTTP/1.0") && strcasecmp(version, "HTTP/1.1")) {
+        client_error(fd, version, "400", "Bad Request", "Version not match");
+        return -1;
+    }                                                                                                                                                            
+    if (parse_uri(uri, host, path, port) < 0) {
+        client_error(fd, uri, "400", "Bad Request", "Malformed uri");
+        return -1;
+    }
+    return 0;
+}
+
+int parse_header(rio_t *rp, header_t headersp, int *hc, int fd, char *uri) {
+    dbg_printf("parsing header.\n");
+    *hc = 0;
+    char buf[MAXLINE], k[MAXLINE], v[MAXLINE];
+    char *tok;
+
+    if (Rio_readlineb(rp, buf, MAXLINE) <= 0){
+        client_error(fd, uri, "400", "Bad Request", "Incomplete requset");
+        return -1; // usr cancel input
+    }
+
+    while(strcmp(buf, "\r\n") && strcmp(buf, "\n")) {
+        tok = strchr(buf, ':');
+        if (!tok) {
+            client_error(fd, uri, "400", "Bad Request", "Bad header");
+            return -1; // not key-value pair
+        } else {
+            *tok = '\0';
+            strcpy(k, buf);
+            tok += 1;
+            if (strlen(tok) < 3) return -1; // value too short
+            tok[strlen(tok)-2] = '\0';
+            strcpy(v, tok+1);
+            if (need_header(k, headersp, hc)) {
+                append_header(k, v, headersp, hc);
+            }
+        }
+        Rio_readlineb(rp, buf, MAXLINE);
+    }
+    return 0;
 }
