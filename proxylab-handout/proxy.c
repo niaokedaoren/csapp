@@ -60,6 +60,9 @@ int   parse_method(int fd, char *buf, char *method, char *uri,
 /* parse client's request's header */
 int   parse_header(rio_t *rp, header_t headers, int *hc, int fd, char *uri);
 
+/* shoe some cache stats */ 
+void* report_cache(void *p);
+
 /* my own wrapper of rio package, suffix _p means polite. */
 void rio_writen_p(int fd, void *usrbuf, size_t n);
 int  open_clientfd_p(char *hostname, int port);
@@ -96,6 +99,8 @@ int main(int argc, char **argv){
     for (i = 0; i < POOL_SIZE; i++)  { /* Create worker threads */
         Pthread_create(&tid, NULL, thread, (void*)i);
     }
+
+    Pthread_create(&tid, NULL, report_cache, NULL);
 
     /* installing signal handler */
     Signal(SIGPIPE, sigpipe_handler);
@@ -384,4 +389,22 @@ int parse_header(rio_t *rp, header_t headersp, int *hc, int fd, char *uri) {
         Rio_readlineb(rp, buf, MAXLINE);
     }
     return 0;
+}
+
+void *report_cache(void *p) {
+    Pthread_detach(pthread_self());
+    while (1) {
+        printf("/****************************************\n");
+        printf(" *total_size:%d, items:%d\n", cache.total_size, cache.item_count);
+        int i = 0;
+        cache_item_t *h = cache.head;
+        while (h) {
+            printf(" * %d . tag(%s), size(%d), age(%d)\n", i, h->tag, h->size, h->age);
+            i++;
+            h = h->next;
+        }
+        printf(" ****************************************/\n");        
+        Sleep(20);
+    }
+    return NULL;
 }
