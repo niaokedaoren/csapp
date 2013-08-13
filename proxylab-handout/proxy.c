@@ -220,6 +220,7 @@ void request(int reply_to_fd, char *uri, char *hostp,
         
         /* receive response */
         i = 0;
+        data_size = 0;
         int byteread;
         char *current = data;
         dbg_printf("[request %d] forwarding.\n", (int)reply_to_fd);
@@ -229,7 +230,7 @@ void request(int reply_to_fd, char *uri, char *hostp,
                 memcpy(current, buf, byteread);
                 current += byteread;
             }
-            rio_writen_p(reply_to_fd, buf, strlen(buf));
+            rio_writen_p(reply_to_fd, buf, byteread);
         }
 
         /* update cache */
