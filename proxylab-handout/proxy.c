@@ -402,7 +402,7 @@ void *report_cache(void *p) {
         int i = 0;
         cache_item_t *h = cache.head;
         while (h) {
-            printf(" * %d . tag(%s), size(%d), age(%d)\n", i, h->tag, h->size, h->age);
+            printf(" * %d . tag(%.80s), size(%d), age(%d)\n", i, h->tag, h->size, h->age);
             i++;
             h = h->next;
         }
