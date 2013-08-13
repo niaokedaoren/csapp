@@ -8,7 +8,7 @@
  * Variables and Types
  *********************************/
 #define POOL_SIZE 4 /* thread pool size */
-#define SBUFSIZE  16 
+#define SBUFSIZE  300
 
 static char *user_agent[2] = {"User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3"};
 static char *accepts[2] = {"Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"};
