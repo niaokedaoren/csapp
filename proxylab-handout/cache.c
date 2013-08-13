@@ -100,14 +100,16 @@ void evict(cache_t *c, char *tag, char *data, int size) {
         }
         h = h->next;
     }
-    c->total_size = c->total_size - to_evict->size + size;
-    to_evict->tag = Realloc(to_evict->tag, strlen(tag)+1);
-    to_evict->data = Realloc(to_evict->data, size);
-    strcpy(to_evict->tag, tag);
-    memcpy(to_evict->data, data, size);
-    to_evict->size = size;
-    _ages(c);
-    to_evict->age = 0;
+    if (c->total_size - to_evict->size + size <= MAX_CACHE_SIZE) {
+        c->total_size = c->total_size - to_evict->size + size;
+        to_evict->tag = Realloc(to_evict->tag, strlen(tag)+1);
+        to_evict->data = Realloc(to_evict->data, size);
+        strcpy(to_evict->tag, tag);
+        memcpy(to_evict->data, data, size);
+        to_evict->size = size;
+        _ages(c);
+        to_evict->age = 0;
+    }
     V(&write_mutex_);
 }
 
