@@ -187,13 +187,9 @@ void request(int reply_to_fd, char *uri, char *hostp,
         return;
     }
     if (setjmp(threads[ctrl_index].error_buf) != 0) {  /* back from ECONNRESET */
-        /* may jmp here cause clientfd create failure */
-        if(clientfd > 0) Close(clientfd); 
         return; 
     }
     if (sigsetjmp(threads[ctrl_index].pipe_buf, 1) != 0) { /* back from SIGPIPE */
-        /* may jmp here cause clientfd create failure */
-        if(clientfd > 0) Close(clientfd); 
         return; 
     }
 

@@ -52,6 +52,7 @@ void get_hit(cache_t *c, char *tag, char *t, int *size) {
         }
     }
 
+    pthread_rwlock_unlock(&rw_lock);
     pthread_rwlock_wrlock(&rw_lock);
     for (h = c->head; h != NULL; h = h->next) {
         if (h == change) {
@@ -60,7 +61,6 @@ void get_hit(cache_t *c, char *tag, char *t, int *size) {
             h->age += 1;
         }
     }
-    pthread_rwlock_unlock(&rw_lock);
     pthread_rwlock_unlock(&rw_lock);
 }
 
