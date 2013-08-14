@@ -26,7 +26,7 @@ void cache_deinit(cache_t *c) {
 }
 
 int find_hit(cache_t *c, char *tag) {
-    pthread_rwlock_wrlock(&rw_lock);
+    pthread_rwlock_rdlock(&rw_lock);
     int i, res = -1;
     cache_item_t *h;
 
