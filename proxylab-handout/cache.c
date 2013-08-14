@@ -5,6 +5,7 @@
 static pthread_rwlock_t rw_lock;
 
 static void _ages(cache_t *c);
+static cache_item_t *_find(cache_t* c, char *tag);
 
 void cache_init(cache_t *c) {
     pthread_rwlock_init(&rw_lock, NULL);
@@ -66,19 +67,21 @@ void get_hit(cache_t *c, char *tag, char *t, int *size) {
 
 void store(cache_t *c, char *tag, char *data, int size) {
     pthread_rwlock_wrlock(&rw_lock);
-    // simply insert into the head
-    cache_item_t* item = Malloc(sizeof(cache_item_t));
-    item->tag = Malloc(strlen(tag)+1);
-    item->data = Malloc(size);
-    strcpy(item->tag, tag);
-    memcpy(item->data, data, size);
-    item->size = size;
-    item->next = c->head;
-    c->head = item;
-    c->total_size += size;
-    c->item_count ++;
-    _ages(c);
-    item->age = 0;
+    if (_find(c, tag) == NULL) {
+        // simply insert into the head
+        cache_item_t* item = Malloc(sizeof(cache_item_t));
+        item->tag = Malloc(strlen(tag)+1);
+        item->data = Malloc(size);
+        strcpy(item->tag, tag);
+        memcpy(item->data, data, size);
+        item->size = size;
+        item->next = c->head;
+        c->head = item;
+        c->total_size += size;
+        c->item_count ++;
+        _ages(c);
+        item->age = 0;
+    }
     pthread_rwlock_unlock(&rw_lock);
 }
 
@@ -113,4 +116,14 @@ static void _ages(cache_t *c) {
         h->age ++;
         h = h->next;
     }
+}
+
+static cache_item_t* _find(cache_t* c, char *tag) {
+    cache_item_t* h;
+    for (h = c->head; h != NULL; h = h->next) {
+        if (!strcmp(h->tag, tag)) {
+            return h;
+        }
+    }
+    return NULL;
 }
