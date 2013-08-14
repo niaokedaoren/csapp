@@ -2,16 +2,12 @@
 #include "csapp.h"
 #include <string.h>
 
-static sem_t write_mutex_;
-static sem_t cnt_mutex_;
-static int read_cnt_;
+static pthread_rwlock_t rw_lock;
 
 static void _ages(cache_t *c);
 
 void cache_init(cache_t *c) {
-    Sem_init(&write_mutex_, 0, 1);
-    Sem_init(&cnt_mutex_, 0, 1);
-    read_cnt_ = 0;
+    pthread_rwlock_init(&rw_lock, NULL);
     c->total_size = 0;
     c->item_count = 0;
     c->head = NULL;
@@ -30,12 +26,7 @@ void cache_deinit(cache_t *c) {
 }
 
 int find_hit(cache_t *c, char *tag) {
-    P(&cnt_mutex_);
-    read_cnt_++;
-    if (read_cnt_ == 1) /* first in */
-        P(&write_mutex_);
-    V(&cnt_mutex_);        
-
+    pthread_rwlock_wrlock(&rw_lock);
     int i, res = -1;
     cache_item_t *h;
 
@@ -44,34 +35,37 @@ int find_hit(cache_t *c, char *tag) {
             res = i; /* tag matches */
         }
     }
-
-    P(&cnt_mutex_);
-    read_cnt_--;
-    if (read_cnt_ == 0) /* last out */
-        V(&write_mutex_); 
-    V(&cnt_mutex_);
-
+    pthread_rwlock_unlock(&rw_lock);
     return res;
 }
 
 void get_hit(cache_t *c, char *tag, char *t, int *size) {
-    P(&write_mutex_);
+    pthread_rwlock_rdlock(&rw_lock);
     cache_item_t *h;
+    cache_item_t *change;
 
     for (h = c->head; h != NULL; h = h->next) {
         if (!strcmp(h->tag, tag)) { /* tag matches */
             memcpy(t, h->data, h->size);
             *size = h->size;
+            change = h;
+        }
+    }
+
+    pthread_rwlock_wrlock(&rw_lock);
+    for (h = c->head; h != NULL; h = h->next) {
+        if (h == change) {
             h->age = 0;
         } else {
             h->age += 1;
         }
     }
-    V(&write_mutex_); 
+    pthread_rwlock_unlock(&rw_lock);
+    pthread_rwlock_unlock(&rw_lock);
 }
 
 void store(cache_t *c, char *tag, char *data, int size) {
-    P(&write_mutex_);
+    pthread_rwlock_wrlock(&rw_lock);
     // simply insert into the head
     cache_item_t* item = Malloc(sizeof(cache_item_t));
     item->tag = Malloc(strlen(tag)+1);
@@ -85,11 +79,11 @@ void store(cache_t *c, char *tag, char *data, int size) {
     c->item_count ++;
     _ages(c);
     item->age = 0;
-    V(&write_mutex_);
+    pthread_rwlock_unlock(&rw_lock);
 }
 
 void evict(cache_t *c, char *tag, char *data, int size) {
-    P(&write_mutex_);
+    pthread_rwlock_wrlock(&rw_lock);
     cache_item_t* h = c->head, *to_evict;
     int oldest_age = -1;
 
@@ -110,7 +104,7 @@ void evict(cache_t *c, char *tag, char *data, int size) {
         _ages(c);
         to_evict->age = 0;
     }
-    V(&write_mutex_);
+    pthread_rwlock_unlock(&rw_lock);
 }
 
 static void _ages(cache_t *c) {
